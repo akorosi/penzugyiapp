@@ -1,0 +1,15 @@
+services:
+  app:
+    build: ./app
+    container_name: penzugy_app
+    ports:
+      - "5000:5000"
+    volumes:
+      - db_data:/data
+      - ./app/uploads:/app/uploads
+    environment:
+      - DATABASE_PATH=/data/penzugyek.db
+    restart: unless-stopped
+
+volumes:
+  db_data:
