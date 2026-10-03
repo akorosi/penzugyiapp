@@ -31,9 +31,9 @@ type SortDir = "asc" | "desc";
 interface Props {
   rows: Transaction[];
   categories: string[];
-  excludedIds: Set<number>;
-  onToggle: (id: number, included: boolean) => void;
-  onToggleMany: (ids: number[], included: boolean) => void;
+  excludedIds: Set<string>;
+  onToggle: (id: string, included: boolean) => void;
+  onToggleMany: (ids: string[], included: boolean) => void;
   onTxSaved: (tx: Transaction) => void;
   onAttributesChanged: () => Promise<void> | void;
   onDelete: (tx: Transaction) => Promise<void>;
@@ -95,7 +95,7 @@ export function LedgerTable({
     const dir = sort.dir === "asc" ? 1 : -1;
     return [...rows].sort((a, b) => {
       const d = sort.key === "date" ? a.date.localeCompare(b.date) : a.amount - b.amount;
-      return d !== 0 ? d * dir : (a.id - b.id) * dir;
+      return d !== 0 ? d * dir : a.id.localeCompare(b.id) * dir;
     });
   }, [rows, sort]);
 

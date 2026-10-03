@@ -1,4 +1,22 @@
+# Helyi fejlesztői környezet: Flask API + PostgreSQL (az Aurora DSQL helyi
+# megfelelője). Az AWS-es telepítést a Terraform végzi (lásd infra/).
 services:
+  db:
+    image: postgres:16-alpine
+    container_name: penzugy_db
+    environment:
+      POSTGRES_USER: penzugy
+      POSTGRES_PASSWORD: penzugy
+      POSTGRES_DB: penzugyek
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U penzugy -d penzugyek"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
   app:
     build:
       context: .
@@ -6,12 +24,14 @@ services:
     container_name: penzugy_app
     ports:
       - "5000:5000"
-    volumes:
-      - db_data:/data
-      - ./app/uploads:/app/uploads
     environment:
-      - DATABASE_PATH=/data/penzugyek.db
+      - DATABASE_URL=postgresql://penzugy:penzugy@db:5432/penzugyek
+      # Opcionális: ha beállítod, a felület belépéskor kéri ezt a kulcsot.
+      # - ACCESS_KEY=valami-titkos
+    depends_on:
+      db:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
-  db_data:
+  pg_data:

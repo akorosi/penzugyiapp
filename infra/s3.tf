@@ -1,0 +1,108 @@
+# ---------- Statikus tartalom: Amazon S3 statikus weboldal ----------
+#
+# A lebuildelt React felület (frontend/dist) és a futásidejű config.json.
+
+resource "random_id" "bucket_suffix" {
+  byte_length = 4
+}
+
+resource "aws_s3_bucket" "web" {
+  bucket        = "${var.project_name}-web-${random_id.bucket_suffix.hex}"
+  force_destroy = true # csak build-termékeket tartalmaz, a forrás a git
+}
+
+resource "aws_s3_bucket_ownership_controls" "web" {
+  bucket = aws_s3_bucket.web.id
+  rule {
+    object_ownership = "BucketOwnerEnforced"
+  }
+}
+
+# A statikus weboldal-végponthoz nyilvános olvasás kell (csak bucket policy-n
+# keresztül; ACL-ek tiltva).
+resource "aws_s3_bucket_public_access_block" "web" {
+  bucket                  = aws_s3_bucket.web.id
+  block_public_acls       = true
+  ignore_public_acls      = true
+  block_public_policy     = false
+  restrict_public_buckets = false
+}
+
+data "aws_iam_policy_document" "web_public_read" {
+  statement {
+    sid       = "PublicReadGetObject"
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.web.arn}/*"]
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+  }
+}
+
+resource "aws_s3_bucket_policy" "web" {
+  bucket     = aws_s3_bucket.web.id
+  policy     = data.aws_iam_policy_document.web_public_read.json
+  depends_on = [aws_s3_bucket_public_access_block.web]
+}
+
+resource "aws_s3_bucket_website_configuration" "web" {
+  bucket = aws_s3_bucket.web.id
+
+  index_document {
+    suffix = "index.html"
+  }
+  error_document {
+    key = "index.html"
+  }
+
+  lifecycle {
+    precondition {
+      condition     = fileexists("${var.frontend_dist_dir}/index.html")
+      error_message = "Nincs lebuildelt frontend. Futtasd előbb: make build (vagy cd frontend && npm ci && npm run build)."
+    }
+  }
+}
+
+locals {
+  mime_types = {
+    html  = "text/html; charset=utf-8"
+    js    = "text/javascript; charset=utf-8"
+    mjs   = "text/javascript; charset=utf-8"
+    css   = "text/css; charset=utf-8"
+    json  = "application/json"
+    svg   = "image/svg+xml"
+    png   = "image/png"
+    jpg   = "image/jpeg"
+    ico   = "image/x-icon"
+    webp  = "image/webp"
+    woff  = "font/woff"
+    woff2 = "font/woff2"
+    txt   = "text/plain; charset=utf-8"
+    map   = "application/json"
+  }
+  web_files = setsubtract(fileset(var.frontend_dist_dir, "**"), ["config.json"])
+}
+
+resource "aws_s3_object" "web" {
+  for_each = local.web_files
+
+  bucket       = aws_s3_bucket.web.id
+  key          = each.value
+  source       = "${var.frontend_dist_dir}/${each.value}"
+  etag         = filemd5("${var.frontend_dist_dir}/${each.value}")
+  content_type = lookup(local.mime_types, lower(try(regex("[^.]+$", each.value), "")), "application/octet-stream")
+  # A hash-elt nevű assetek örökre gyorsítótárazhatók, a többi mindig frissüljön.
+  cache_control = startswith(each.value, "assets/") ? "public, max-age=31536000, immutable" : "no-cache"
+}
+
+# Futásidejű konfiguráció: így a frontend tudja, hol az API (újrabuildelés nélkül).
+resource "aws_s3_object" "config" {
+  bucket        = aws_s3_bucket.web.id
+  key           = "config.json"
+  content_type  = "application/json"
+  cache_control = "no-cache"
+  content = jsonencode({
+    apiBaseUrl = trimsuffix(aws_lambda_function_url.api.function_url, "/")
+  })
+}

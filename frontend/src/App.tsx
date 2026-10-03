@@ -18,6 +18,7 @@ import {
   BarChartIcon,
   CrossCircledIcon,
   DesktopIcon,
+  ExitIcon,
   MoonIcon,
   ReloadIcon,
   SunIcon,
@@ -29,7 +30,8 @@ import { FilterBar } from "./components/FilterBar";
 import { LedgerTable } from "./components/LedgerTable";
 import { UploadDialog } from "./components/UploadDialog";
 import { useToast } from "./components/Toaster";
-import { api } from "./lib/api";
+import { api, getAccessKey, setAccessKey } from "./lib/api";
+import { AccessKeyScreen } from "./components/AccessKeyScreen";
 import { applyFilters, computeTotals, expensesByCategory, hasActiveFilters } from "./lib/ledger";
 import { buildCategoryColorIndex } from "./lib/palette";
 import { EMPTY_FILTERS, type Filters, type Transaction } from "./lib/types";
@@ -51,7 +53,7 @@ export function App({ appearance }: Props) {
   const data = useLedgerData();
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   // Kijelölésből kivett tételek — csak munkamenet-szintű állapot, nem kerül mentésre.
-  const [excludedIds, setExcludedIds] = useState<Set<number>>(() => new Set());
+  const [excludedIds, setExcludedIds] = useState<Set<string>>(() => new Set());
   const [view, setView] = useState<View>(readView);
 
   useEffect(() => {
@@ -73,7 +75,7 @@ export function App({ appearance }: Props) {
     [data.transactions],
   );
 
-  const toggle = useCallback((id: number, inc: boolean) => {
+  const toggle = useCallback((id: string, inc: boolean) => {
     setExcludedIds((prev) => {
       const next = new Set(prev);
       if (inc) next.delete(id);
@@ -82,7 +84,7 @@ export function App({ appearance }: Props) {
     });
   }, []);
 
-  const toggleMany = useCallback((ids: number[], inc: boolean) => {
+  const toggleMany = useCallback((ids: string[], inc: boolean) => {
     setExcludedIds((prev) => {
       const next = new Set(prev);
       for (const id of ids) {
@@ -118,6 +120,19 @@ export function App({ appearance }: Props) {
     }
   };
 
+  const signIn = async (key: string) => {
+    setAccessKey(key);
+    await data.reload();
+  };
+
+  const signOut = async () => {
+    setAccessKey(null);
+    data.clear();
+    setExcludedIds(new Set());
+    await data.reload();
+  };
+
+  const unauthorized = data.status === "unauthorized";
   const loading = data.status === "loading";
   const isEmpty = data.status === "ready" && data.transactions.length === 0;
   const excludedInView = filtered.length - included.length;
@@ -160,11 +175,12 @@ export function App({ appearance }: Props) {
             <Flex align="center" gap="2">
               <DropdownMenu.Root>
                 <DropdownMenu.Trigger>
-                  <IconButton variant="ghost" color="gray" aria-label="Megjelenés">
+                  <IconButton variant="ghost" color="gray" aria-label="Beállítások">
                     <ThemeIcon width="18" height="18" />
                   </IconButton>
                 </DropdownMenu.Trigger>
                 <DropdownMenu.Content align="end">
+                  <DropdownMenu.Label>Megjelenés</DropdownMenu.Label>
                   <DropdownMenu.RadioGroup
                     value={appearance.pref}
                     onValueChange={(v) => appearance.setPref(v as AppearancePref)}
@@ -179,9 +195,17 @@ export function App({ appearance }: Props) {
                       <DesktopIcon /> Rendszer szerint
                     </DropdownMenu.RadioItem>
                   </DropdownMenu.RadioGroup>
+                  {getAccessKey() && !unauthorized && (
+                    <>
+                      <DropdownMenu.Separator />
+                      <DropdownMenu.Item color="red" onSelect={() => void signOut()}>
+                        <ExitIcon /> Kijelentkezés
+                      </DropdownMenu.Item>
+                    </>
+                  )}
                 </DropdownMenu.Content>
               </DropdownMenu.Root>
-              <UploadDialog trigger={importButton} onImported={onImported} />
+              {!unauthorized && <UploadDialog trigger={importButton} onImported={onImported} />}
             </Flex>
           </Flex>
         </Container>
@@ -204,9 +228,13 @@ export function App({ appearance }: Props) {
               </Callout.Root>
             )}
 
-            <SummaryCards totals={totals} loading={loading} />
+            {unauthorized ? (
+              <AccessKeyScreen onSubmit={signIn} />
+            ) : (
+              <SummaryCards totals={totals} loading={loading} />
+            )}
 
-            {isEmpty ? (
+            {unauthorized ? null : isEmpty ? (
               <Card size="4">
                 <Flex direction="column" align="center" gap="3" py="6" className="empty-state">
                   <span className="empty-state__icon" aria-hidden>

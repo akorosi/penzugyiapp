@@ -1,33 +1,140 @@
 # Pénzügyek — CIB folyószámla-könyvelő
 
-Docker Compose-ban futó alkalmazás, amely a CIB `tranzakciok.xls` kivonatot
-beimportálja, automatikusan (és kézzel is) kategorizálja a tételeket
-(bevétel / kiadás / megtakarítás) többszintű attribútum-fával, és
-diagramokon mutatja a kiadások fő attribútum szerinti megoszlását.
+Webes alkalmazás, amely a CIB `tranzakciok.xls` kivonatot beimportálja,
+automatikusan (és kézzel is) kategorizálja a tételeket (bevétel / kiadás /
+megtakarítás) többszintű attribútum-fával, és diagramokon mutatja a
+kiadások fő attribútum szerinti megoszlását.
 
-A felület egy [Radix UI](https://www.radix-ui.com/)-ra (Radix Themes +
-Radix primitívek) épülő React alkalmazás (`frontend/`), ami statikus
-fájlokká buildelődik — így a Flask szerveren kívül bármilyen statikus
-tárhelyről (pl. később AWS S3-ról) is kiszolgálható.
+Az alkalmazás **AWS-en, szerver nélkül** fut, kizárólag AWS Free Tier
+szolgáltatásokkal, és a teljes infrastruktúrát **és** az alkalmazás
+telepítését **Terraform** kezeli. Fejlesztéshez helyben, Docker Compose-zal
+is futtatható.
 
-## Összetevők
+## Architektúra (AWS)
 
-| Szolgáltatás | Mi ez | Port |
+```
+ Böngésző ──HTTP──▶ Amazon S3 statikus weboldal      (React + Radix UI felület, config.json)
+    │
+    └──HTTPS──▶ Lambda Function URL ──▶ AWS Lambda   (Python 3.13, arm64 — Flask REST API)
+                                           │  IAM auth token, TLS
+                                           ▼
+                                     Amazon Aurora DSQL   (szerver nélküli, PostgreSQL-kompatibilis)
+```
+
+| Réteg | Szolgáltatás | Free Tier |
 |---|---|---|
-| `app` | Python (Flask) alkalmazás: XLS import, kategorizáló motor, REST API, valamint a lebuildelt React/Radix UI felület kiszolgálása | http://localhost:5000 |
-| adatbázis | **SQLite**, egyetlen fájlban (`/data/penzugyek.db`), az `app` konténerben fut beágyazva, egy Docker volume-on | — |
+| Statikus tartalom | **Amazon S3** statikus weboldal-hosting (`frontend/dist` + `config.json`) | 5 GB, 20 000 GET / 2 000 PUT havonta¹ |
+| Dinamikus réteg | **AWS Lambda** + **Function URL** (nincs API Gateway) | mindig ingyenes: 1 millió kérés és 400 000 GB-mp havonta |
+| Adatbázis | **Amazon Aurora DSQL** | mindig ingyenes: 100 000 DPU és 1 GB tárhely havonta |
+| Naplók | **CloudWatch Logs** (14 napos megőrzés) | mindig ingyenes: 5 GB havonta |
+| Jogosultság | **IAM** szerepkör és policy-k | díjmentes |
 
-## Indítás
+¹ Az S3 a 2025. július 15. előtt nyitott fiókoknál 12 hónapig ingyenes; az
+újabb fiókok Free Tier kreditet kapnak, amiből ez a néhány MB-os,
+alacsony forgalmú tárolás fillérekbe kerül. Szándékosan **nincs** VPC, NAT
+Gateway, API Gateway vagy CloudFront, így nincs óradíjas erőforrás.
+
+**Hogyan működik:**
+
+- A felület egy statikus React build. Az API címét futásidőben, a bucketben
+  lévő `config.json`-ból olvassa — ezt a Terraform írja a Lambda Function
+  URL alapján, így a frontendet nem kell környezetenként újrabuildelni.
+- A Lambda a Flask alkalmazást futtatja egy beépített WSGI adapterrel
+  (`app/lambda_handler.py`). A Function URL CORS-beállítása csak az S3
+  weboldal originjét engedi.
+- **Hitelesítés:** a Function URL nyilvános, ezért minden `/api` kérésnek a
+  Terraform által generált **hozzáférési kulcsot** kell küldenie
+  (`Authorization: Bearer …`). A felület belépéskor kéri.
+- A Lambda a DSQL-hez a saját IAM szerepkörével, rövid életű auth tokennel
+  és TLS-sel csatlakozik — nincs tárolt adatbázis-jelszó.
+- Az adatbázis-sémát a Terraform hozza létre / frissíti telepítéskor (a
+  Lambda `migrate` műveletét hívja meg, `aws_lambda_invocation`).
+
+## Telepítés AWS-re
+
+**Előfeltételek:** [Terraform](https://developer.hashicorp.com/terraform/install)
+≥ 1.6, Node.js 22, Python 3 + pip, AWS hitelesítő adatok (pl. `aws configure`
+vagy `AWS_PROFILE`), olyan régió, ahol az Aurora DSQL elérhető
+(alapértelmezés: `eu-central-1`, Frankfurt).
+
+```bash
+cp infra/terraform.tfvars.example infra/terraform.tfvars   # opcionális, régió/név
+make deploy
+```
+
+A `make deploy` lépései: frontend build (`npm ci && npm run build`), Lambda
+csomag (`scripts/build_lambda.sh` — a függőségeket a Lambda arm64
+környezetére tölti le, Docker nélkül), majd `terraform init` és
+`terraform apply`. A végén kiírja a weboldal címét. A belépéshez szükséges
+kulcs:
+
+```bash
+terraform -chdir=infra output -raw access_key
+```
+
+**Frissítés:** kódváltozás után ugyanúgy `make deploy` — a Terraform csak a
+megváltozott fájlokat tölti fel az S3-ba, és csak akkor telepíti újra a
+Lambdát, ha a csomag tartalma változott.
+
+**Megjegyzések:**
+
+- Ha a fiókban be van kapcsolva a fiókszintű *S3 Block Public Access*, az
+  `apply` a bucket policy-nál hibát ad. A statikus weboldal-hostinghoz ezt
+  a fiókszintű beállítást ki kell kapcsolni (a bucket ACL-jei ettől még
+  tiltva maradnak, csak a bucket policy-n keresztüli olvasás engedélyezett).
+- A Terraform állapot (`infra/terraform.tfstate`) helyben tárolódik, és
+  **titkot tartalmaz** (a hozzáférési kulcsot) — ne kerüljön gitbe (a
+  `.gitignore` kizárja). Több gépről történő kezeléshez érdemes S3
+  backendet beállítani a `infra/versions.tf`-ben.
+- Az első `terraform init` után keletkező `infra/.terraform.lock.hcl`
+  fájlt érdemes commitolni.
+- **Kulcscsere:** `terraform -chdir=infra apply -replace=random_password.access_key`.
+- Az S3 statikus weboldal-végpont csak HTTP-t támogat (az API hívások
+  HTTPS-en mennek). HTTPS-hez a következő lépés egy CloudFront disztribúció
+  lehet (szintén Free Tier).
+
+### Adatátköltöztetés a korábbi (SQLite-os) verzióból
+
+```bash
+# a régi Docker Compose-os verzióból (még a régi kóddal futó konténerből):
+docker compose cp app:/data/penzugyek.db ./penzugyek.db
+
+pip install -r app/requirements.txt
+cd app
+DSQL_ENDPOINT=$(terraform -chdir=../infra output -raw dsql_endpoint) \
+  python import_sqlite.py ../penzugyek.db
+```
+
+A szkript a törölt (inaktív) tételeket is átviszi, hogy a duplikátum-védelem
+megmaradjon; a már meglévő tételeket kihagyja, így többször is futtatható.
+
+### AWS erőforrások törlése
+
+Az adatbázison alapértelmezésben törlésvédelem van. Törléshez:
+
+```bash
+terraform -chdir=infra apply -var dsql_deletion_protection=false
+make destroy
+```
+
+## Helyi futtatás (fejlesztés)
 
 ```bash
 docker compose up --build
 ```
 
-Az alkalmazás: **http://localhost:5000**
+Az alkalmazás: **http://localhost:5000** — a Flask szerver itt a felületet
+is kiszolgálja, az adatbázis egy helyi PostgreSQL konténer (az Aurora DSQL
+helyi megfelelője, ugyanazzal a sémával). Helyben alapértelmezésben nincs
+hozzáférési kulcs; a `docker-compose.yml`-ben az `ACCESS_KEY` változóval
+bekapcsolható. Adatok törlése: `docker compose down -v`.
 
 ## Használat
 
-1. Nyisd meg az `http://localhost:5000` oldalt.
+1. Nyisd meg a weboldalt (AWS-en a `terraform output website_url` címe,
+   helyben `http://localhost:5000`). AWS-en először a **hozzáférési
+   kulcsot** kéri (`terraform -chdir=infra output -raw access_key`); a
+   böngésző megjegyzi, a fejléc menüjében **Kijelentkezés** törli.
 2. A jobb felső **Importálás** gombbal (üres adatbázisnál a középen
    megjelenő gombbal is) nyílik a feltöltő ablak: húzd bele a CIB
    `tranzakciok.xls` (vagy `.xlsx`) fájlt, vagy tallózd ki.
@@ -68,6 +175,7 @@ Az alkalmazás: **http://localhost:5000**
    - a sor végén lévő **kuka** ikonnal bármelyik tétel törölhető, egy
      megerősítő ablak után (soft delete: megmarad az adatbázisban
      inaktívként, hogy egy újrafeltöltés ne hozza vissza).
+   - a feltöltött fájl nem kerül tárolásra, csak a beolvasott tételek.
    - a **Dátum** és **Összeg** oszlopfejlécre kattintva rendezhetsz; a
      táblázat lapozható (25 / 50 / 100 / összes sor oldalanként).
 5. **Checkbox minden sor elején.** Alapesetben minden tétel ki van jelölve.
@@ -113,74 +221,56 @@ fő attribútum [, al-attribútum]). A szabályok csak az XLS-importnál, kiadá
 rekordokra futnak le automatikusan; a kategorizálás bármikor felülírható
 kézzel az UI-n.
 
-## Adatok törlése / friss kezdés
-
-```bash
-docker compose down -v   # a -v törli az SQLite adat-volume-ot is
-```
-
 ## Fejlesztői megjegyzések
+
+### Könyvtárszerkezet
+
+| Útvonal | Tartalom |
+|---|---|
+| `frontend/` | React 19 + TypeScript + Vite felület (Radix Themes, Radix primitívek, Recharts) |
+| `app/` | Python backend: `main.py` (Flask REST API), `lambda_handler.py` (Lambda belépési pont + WSGI adapter), `db.py` (kapcsolat + séma), `repository.py` (SQL), `excel_parser.py`, `categorize.py`, `import_sqlite.py` |
+| `infra/` | Terraform: `s3.tf`, `lambda.tf`, `dsql.tf`, `variables.tf`, `outputs.tf` |
+| `scripts/build_lambda.sh` | Lambda csomag összeállítása (`build/lambda/`) |
+| `Makefile` | `build`, `deploy`, `destroy`, `test` |
 
 ### Frontend (`frontend/`)
 
-- **React 19 + TypeScript + Vite**, UI: **Radix Themes** (`@radix-ui/themes`
-  — Card, Table, Tabs, Dialog, AlertDialog, Popover, Select,
-  SegmentedControl, DropdownMenu, Tooltip, Skeleton…), a **Radix Toast**
-  primitív (`radix-ui`) az értesítésekhez, ikonok: `@radix-ui/react-icons`,
-  diagramok: **Recharts** (külön chunkba töltve, csak az Elemzés fül
-  megnyitásakor).
-- Szerkezet: `src/lib/` (API kliens, típusok, szűrés/összesítés,
-  formázás, paletta, hookok), `src/components/` (felület elemei),
-  `src/App.tsx` (elrendezés, állapot).
-- Helyi fejlesztés (hot reload): indítsd a backendet (`docker compose up`
-  vagy helyben, lásd lent), majd:
-
-  ```bash
-  cd frontend
-  npm install
-  npm run dev        # http://localhost:5173, az /api hívásokat a :5000-re proxyzza
-  ```
-
-- Build: `npm run build` (típusellenőrzés + statikus build a
-  `frontend/dist/` könyvtárba). A build **relatív útvonalakat** használ
-  (`base: "./"`), így tetszőleges statikus tárhelyről működik.
-- **API cím:** alapértelmezésben a felület ugyanarról az originről hívja az
-  API-t, ahonnan kiszolgálták. Külön hosztolt frontendnél (pl. S3) a
-  build előtt a `VITE_API_BASE_URL` környezeti változóban adható meg a
-  backend címe (lásd `frontend/.env.example`). *(Ilyenkor a backendre
-  CORS-beállítás is kell majd — ez az AWS-re költözés része, itt még
-  nincs megvalósítva.)*
+- UI: **Radix Themes** (`@radix-ui/themes`), a **Radix Toast** primitív
+  (`radix-ui`), ikonok: `@radix-ui/react-icons`, diagramok: **Recharts**
+  (külön chunkba töltve, csak az Elemzés fül megnyitásakor).
+- Fejlesztés hot reloaddal: indítsd a backendet (`docker compose up`),
+  majd `cd frontend && npm install && npm run dev` →
+  http://localhost:5173 (az `/api` hívásokat a :5000-re proxyzza).
+  A felhős API ellen is fejleszthetsz: `extra_cors_origins =
+  ["http://localhost:5173"]` a `terraform.tfvars`-ban, és
+  `VITE_API_BASE_URL=<api_url> npm run dev`.
+- Az API címe: `config.json` (futásidejű, AWS) → `VITE_API_BASE_URL`
+  (build-idejű) → azonos origin. A hozzáférési kulcsot a böngésző
+  `localStorage`-ban tárolja.
 - A **checkbox-alapú kijelölés** kizárólag kliens oldali állapot
-  (`excludedIds` Set az `App.tsx`-ben) — nincs hozzá backend
-  mező/végpont, szándékosan: ez egy ideiglenes, munkamenet-szintű elemzési
-  eszköz, nem tartós adatmódosítás.
+  (`excludedIds` Set az `App.tsx`-ben) — szándékosan nincs hozzá
+  backend mező/végpont.
 
 ### Backend (`app/`)
 
-- Flask + SQLAlchemy, `models.py` (transactions, attributes —
-  önhivatkozó fa-tábla tetszőleges mélységhez; a `Transaction.kind`
-  property adja a bevétel/kiadás/megtakarítás besorolást az összeg előjele
-  és a fő attribútum alapján), `excel_parser.py` (XLS/XLSX beolvasás — a
-  teljes A11-től kezdődő tartalmat visszaadja, szűrés nélkül),
-  `categorize.py` (kulcsszó-alapú automatikus kategorizálás), `main.py`
-  (REST API + a lebuildelt felület kiszolgálása; itt történik a
-  duplikátum-ellenőrzés `tx_hash` alapján).
-- A Flask a felületet a `WEB_DIR` könyvtárból szolgálja ki (Docker-ben
-  `/app/web`, ahová a multi-stage `app/Dockerfile` másolja a frontend
-  buildet; helyben automatikusan a `frontend/dist`). Az `/api/...`
-  végpontok változatlanok.
-- Helyi futtatás Docker nélkül:
+- Flask + **psycopg 3**, sima SQL (nincs ORM), pandas nélküli Excel
+  beolvasás (`xlrd` / `openpyxl`) — így kicsi a Lambda csomag.
+- Az adatbázist környezeti változó választja ki: `DSQL_ENDPOINT` (Aurora
+  DSQL, IAM token) vagy `DATABASE_URL` (PostgreSQL).
+- **Aurora DSQL-hez igazított séma és lekérdezések:** UUID elsődleges
+  kulcsok (nincs szekvencia), nincs idegen kulcs (a fa törlését az
+  alkalmazás végzi), indexek `CREATE INDEX ASYNC`-kel, minden DDL külön
+  tranzakcióban, az import legfeljebb 500 tételes tranzakciókban, és
+  konkurencia-ütközésnél (SQLSTATE 40001) automatikus újrapróbálás.
+- A `tx_hash` (dátum+típus+közlemény+összeg SHA-256, egyedi index)
+  biztosítja, hogy ugyanazt a kivonatot többször feltöltve ne keletkezzen
+  duplikátum — a fájlon belüli ismétlődéseket is kiszűri.
+- **Törlés = soft delete** (`transactions.is_active`); minden listázó
+  lekérdezés csak az aktív tételeket adja vissza, a duplikátum-ellenőrzés
+  viszont a törölteket is figyelembe veszi.
+- **Tesztek** (valódi PostgreSQL ellen, a Lambda adapterrel együtt):
 
   ```bash
-  (cd frontend && npm install && npm run build)
-  pip install -r app/requirements.txt
-  cd app && DATABASE_PATH=./data/penzugyek.db UPLOAD_DIR=./uploads python main.py
+  pip install -r app/requirements-dev.txt
+  TEST_DATABASE_URL=postgresql://user:pass@localhost:5432/penzugy_test make test
   ```
-
-- A `tx_hash` (dátum+típus+közlemény+összeg SHA-256) biztosítja, hogy
-  ugyanazt a kivonatot többször feltöltve ne keletkezzen duplikátum.
-- **Törlés = soft delete.** A `transactions.is_active` mező jelzi, hogy egy
-  tétel aktív-e; a törlés gomb ezt állítja `false`-ra, a rekord fizikailag
-  megmarad. Minden listázó/összesítő API-lekérdezés `is_active = 1`-re szűr.
-  Egy korábbi (a mezőt még nem ismerő) adatbázison az app indulásakor egy
-  automatikus `ALTER TABLE` pótolja az oszlopot, adatvesztés nélkül.
