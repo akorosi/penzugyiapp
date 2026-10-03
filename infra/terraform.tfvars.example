@@ -1,6 +1,21 @@
-# Másold terraform.tfvars néven és igazítsd.
+# Másold terraform.tfvars néven és töltsd ki. (A terraform.tfvars nincs gitben.)
 aws_region   = "eu-central-1"
 project_name = "penzugyek"
+
+# A Cognito belépési domain előtagja — régiónként globálisan egyedi legyen.
+# Ebből lesz a Google OAuth kliens redirect URI-ja:
+#   https://<előtag>.auth.<régió>.amazoncognito.com/oauth2/idpresponse
+cognito_domain_prefix = "penzugyek-hundjmada"
+
+# Google Cloud Console → APIs & Services → Credentials → OAuth client ID (Web application)
+google_client_id     = "xxxxxxxxxxxx-xxxxxxxxxxxxxxxx.apps.googleusercontent.com"
+google_client_secret = "GOCSPX-xxxxxxxxxxxxxxxxxxxxxxxx"
+
+# Belépésre jogosult Google-fiókok (alapértelmezés):
+# allowed_emails = ["hundjmada@gmail.com", "dferenczi@gmail.com"]
+
+# A korábbi (egyfelhasználós) adatok tulajdonosa:
+# legacy_data_owner = "hundjmada@gmail.com"
 
 # terraform destroy előtt:
 # dsql_deletion_protection = false

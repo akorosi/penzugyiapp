@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, ApiError, UNAUTHORIZED_EVENT } from "./api";
+import { api, ApiError, type Me } from "./api";
 import type { Transaction } from "./types";
 
 type Status = "loading" | "ready" | "error" | "unauthorized";
@@ -10,6 +10,7 @@ export function useLedgerData() {
   const [categories, setCategories] = useState<string[]>([]);
   const [status, setStatus] = useState<Status>("loading");
   const [error, setError] = useState<string | null>(null);
+  const [me, setMe] = useState<Me | null>(null);
 
   const refreshCategories = useCallback(async () => {
     try {
@@ -21,13 +22,14 @@ export function useLedgerData() {
 
   const reload = useCallback(async () => {
     try {
-      const [txs] = await Promise.all([api.listTransactions(), refreshCategories()]);
+      const [txs, who] = await Promise.all([api.listTransactions(), api.me(), refreshCategories()]);
       setTransactions(txs);
+      setMe(who);
       setStatus("ready");
       setError(null);
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) {
-        setStatus("unauthorized");
+        setStatus("unauthorized"); // az api már átirányít a belépéshez
         return;
       }
       setError((e as Error).message);
@@ -39,13 +41,6 @@ export function useLedgerData() {
     void reload();
   }, [reload]);
 
-  // Bármelyik API-hívás 401-es válasza a belépő képernyőre visz.
-  useEffect(() => {
-    const onUnauthorized = () => setStatus("unauthorized");
-    window.addEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
-    return () => window.removeEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
-  }, []);
-
   /** Egy tétel helyi frissítése a szerver válasza alapján (teljes újratöltés nélkül). */
   const replaceTransaction = useCallback((tx: Transaction) => {
     setTransactions((prev) => prev.map((t) => (t.id === tx.id ? tx : t)));
@@ -55,20 +50,15 @@ export function useLedgerData() {
     setTransactions((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
-  const clear = useCallback(() => {
-    setTransactions([]);
-    setCategories([]);
-  }, []);
-
   return {
     transactions,
     categories,
     status,
     error,
+    me,
     reload,
     refreshCategories,
     replaceTransaction,
     removeTransaction,
-    clear,
   };
 }

@@ -2,6 +2,8 @@
 DSQL-kompatibilis SQL-t nem lehet SQLite-tal hitelesen tesztelni.
 
     TEST_DATABASE_URL=postgresql://postgres@localhost:5432/penzugy_test pytest
+
+A hitelesítés Cognito módban fut; a Cognito/Google oldalt a tesztek helyettesítik.
 """
 
 import io
@@ -16,11 +18,24 @@ if TEST_DB:
     os.environ["DATABASE_URL"] = TEST_DB
 os.environ.pop("DSQL_ENDPOINT", None)
 os.environ.pop("AWS_LAMBDA_FUNCTION_NAME", None)
-os.environ["ACCESS_KEY"] = "test-key"
+os.environ.update(
+    AUTH_MODE="cognito",
+    SESSION_SECRET="test-session-secret-0123456789abcdef0123456789",
+    ALLOWED_EMAILS="anna@example.com, Bela@Example.com",
+    COGNITO_CLIENT_ID="test-client",
+    COGNITO_CLIENT_SECRET="test-secret",
+    APP_URL="https://app.example.net",
+    COGNITO_DOMAIN="https://penzugyek.auth.eu-central-1.amazoncognito.com",
+    COGNITO_USER_POOL_ID="eu-central-1_TEST",
+    COGNITO_REGION="eu-central-1",
+)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-AUTH = {"X-Access-Key": "test-key"}
+USER_A = "anna@example.com"
+USER_B = "bela@example.com"
+# A módosító kérésekhez szükséges CSRF fejléc (a frontend mindig küldi).
+HDR = {"X-Requested-With": "penzugyek"}
 
 
 def pytest_collection_modifyitems(config, items):
@@ -36,8 +51,15 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "needs_db: PostgreSQL adatbázist igénylő teszt")
 
 
+def login(client, email: str) -> None:
+    import auth
+
+    client.set_cookie(auth.SESSION_COOKIE, auth.make_session(email))
+
+
 @pytest.fixture()
-def client():
+def app_client():
+    """Üres adatbázis, bejelentkezés nélküli kliens."""
     import db
     from main import app
 
@@ -46,6 +68,13 @@ def client():
     conn.execute("DELETE FROM attributes")
     conn.execute("DELETE FROM transactions")
     return app.test_client()
+
+
+@pytest.fixture()
+def client(app_client):
+    """USER_A-ként bejelentkezett kliens."""
+    login(app_client, USER_A)
+    return app_client
 
 
 def make_xlsx(rows: list[tuple]) -> bytes:

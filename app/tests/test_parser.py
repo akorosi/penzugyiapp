@@ -20,8 +20,10 @@ def test_parses_from_row_11_without_filtering():
 
 def test_hash_is_stable():
     rec = {"date": date(2026, 1, 2), "tx_type": "a", "description": "b", "amount": -1.0}
-    assert make_hash(rec) == make_hash(dict(rec))
-    assert make_hash(rec) != make_hash({**rec, "amount": -2.0})
+    assert make_hash(rec, "a@x") == make_hash(dict(rec), "a@x")
+    assert make_hash(rec, "a@x") != make_hash({**rec, "amount": -2.0}, "a@x")
+    # különböző tulajdonos → különböző azonosító
+    assert make_hash(rec, "a@x") != make_hash(rec, "b@x")
 
 
 def test_rejects_garbage():

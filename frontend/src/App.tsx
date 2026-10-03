@@ -1,5 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import {
+  Avatar,
   Badge,
   Box,
   Button,
@@ -11,6 +12,7 @@ import {
   Heading,
   IconButton,
   Skeleton,
+  Spinner,
   Tabs,
   Text,
 } from "@radix-ui/themes";
@@ -30,8 +32,7 @@ import { FilterBar } from "./components/FilterBar";
 import { LedgerTable } from "./components/LedgerTable";
 import { UploadDialog } from "./components/UploadDialog";
 import { useToast } from "./components/Toaster";
-import { api, getAccessKey, setAccessKey } from "./lib/api";
-import { AccessKeyScreen } from "./components/AccessKeyScreen";
+import { api, logout } from "./lib/api";
 import { applyFilters, computeTotals, expensesByCategory, hasActiveFilters } from "./lib/ledger";
 import { buildCategoryColorIndex } from "./lib/palette";
 import { EMPTY_FILTERS, type Filters, type Transaction } from "./lib/types";
@@ -120,18 +121,6 @@ export function App({ appearance }: Props) {
     }
   };
 
-  const signIn = async (key: string) => {
-    setAccessKey(key);
-    await data.reload();
-  };
-
-  const signOut = async () => {
-    setAccessKey(null);
-    data.clear();
-    setExcludedIds(new Set());
-    await data.reload();
-  };
-
   const unauthorized = data.status === "unauthorized";
   const loading = data.status === "loading";
   const isEmpty = data.status === "ready" && data.transactions.length === 0;
@@ -175,11 +164,30 @@ export function App({ appearance }: Props) {
             <Flex align="center" gap="2">
               <DropdownMenu.Root>
                 <DropdownMenu.Trigger>
-                  <IconButton variant="ghost" color="gray" aria-label="Beállítások">
-                    <ThemeIcon width="18" height="18" />
-                  </IconButton>
+                  {data.me ? (
+                    <IconButton variant="ghost" color="gray" radius="full" aria-label={`Fiók és beállítások (${data.me.email})`}>
+                      <Avatar size="2" radius="full" fallback={data.me.email.charAt(0).toUpperCase()} />
+                    </IconButton>
+                  ) : (
+                    <IconButton variant="ghost" color="gray" aria-label="Beállítások">
+                      <ThemeIcon width="18" height="18" />
+                    </IconButton>
+                  )}
                 </DropdownMenu.Trigger>
                 <DropdownMenu.Content align="end">
+                  {data.me && (
+                    <>
+                      <Box px="3" py="2" maxWidth="260px">
+                        <Text as="div" size="1" color="gray">
+                          {data.me.auth === "cognito" ? "Bejelentkezve" : "Helyi mód (belépés nélkül)"}
+                        </Text>
+                        <Text as="div" size="2" weight="medium" truncate>
+                          {data.me.email}
+                        </Text>
+                      </Box>
+                      <DropdownMenu.Separator />
+                    </>
+                  )}
                   <DropdownMenu.Label>Megjelenés</DropdownMenu.Label>
                   <DropdownMenu.RadioGroup
                     value={appearance.pref}
@@ -195,10 +203,10 @@ export function App({ appearance }: Props) {
                       <DesktopIcon /> Rendszer szerint
                     </DropdownMenu.RadioItem>
                   </DropdownMenu.RadioGroup>
-                  {getAccessKey() && !unauthorized && (
+                  {data.me?.auth === "cognito" && (
                     <>
                       <DropdownMenu.Separator />
-                      <DropdownMenu.Item color="red" onSelect={() => void signOut()}>
+                      <DropdownMenu.Item color="red" onSelect={logout}>
                         <ExitIcon /> Kijelentkezés
                       </DropdownMenu.Item>
                     </>
@@ -229,7 +237,10 @@ export function App({ appearance }: Props) {
             )}
 
             {unauthorized ? (
-              <AccessKeyScreen onSubmit={signIn} />
+              <Flex direction="column" align="center" gap="3" py="9" role="status">
+                <Spinner size="3" />
+                <Text color="gray">Átirányítás a belépéshez…</Text>
+              </Flex>
             ) : (
               <SummaryCards totals={totals} loading={loading} />
             )}

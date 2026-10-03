@@ -133,6 +133,8 @@ def parse_cib_statement(content: bytes) -> list[dict]:
     return records
 
 
-def make_hash(rec: dict) -> str:
-    key = f"{rec['date'].isoformat()}|{rec['tx_type']}|{rec['description']}|{rec['amount']:.2f}"
+def make_hash(rec: dict, owner: str) -> str:
+    """Duplikátum-azonosító. A tulajdonos is része, így ugyanazt a kivonatot két
+    felhasználó egymástól függetlenül feltöltheti."""
+    key = f"{owner}|{rec['date'].isoformat()}|{rec['tx_type']}|{rec['description']}|{rec['amount']:.2f}"
     return hashlib.sha256(key.encode("utf-8")).hexdigest()

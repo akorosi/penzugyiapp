@@ -26,8 +26,10 @@ services:
       - "5000:5000"
     environment:
       - DATABASE_URL=postgresql://penzugy:penzugy@db:5432/penzugyek
-      # Opcionális: ha beállítod, a felület belépéskor kéri ezt a kulcsot.
-      # - ACCESS_KEY=valami-titkos
+      # Helyben nincs belépés (Cognito csak AWS-en): minden adat ehhez a
+      # felhasználóhoz tartozik.
+      - AUTH_MODE=none
+      - DEV_USER_EMAIL=hundjmada@gmail.com
     depends_on:
       db:
         condition: service_healthy

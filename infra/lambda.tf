@@ -6,15 +6,18 @@
 # külön díj.
 # Free Tier (mindig ingyenes): havi 1 millió kérés és 400 000 GB-másodperc.
 
+data "aws_caller_identity" "current" {}
+
 locals {
   function_name  = "${var.project_name}-api"
   website_origin = "https://${aws_cloudfront_distribution.web.domain_name}"
+  allowed_emails = [for e in var.allowed_emails : lower(trimspace(e))]
 }
 
-# Hozzáférési kulcs: a frontend az "X-Access-Key" fejlécben küldi (az
-# Authorization fejlécet a CloudFront aláírása foglalja).
-resource "random_password" "access_key" {
-  length  = 40
+# A munkamenet-sütik aláírókulcsa (HMAC-SHA256). Ugyanezt használja a Lambda
+# (kiállítás + API ellenőrzés) és a CloudFront Function (statikus tartalom).
+resource "random_password" "session_secret" {
+  length  = 64
   special = false
 }
 
@@ -63,6 +66,13 @@ data "aws_iam_policy_document" "api" {
     actions   = ["dsql:DbConnectAdmin"]
     resources = [aws_dsql_cluster.main.arn]
   }
+
+  # Cognito kliens adatai (a paraméter-ARN névből képzett, hogy ne legyen függőségi kör)
+  statement {
+    sid       = "ReadAuthConfig"
+    actions   = ["ssm:GetParameters"]
+    resources = ["arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${local.ssm_prefix}/*"]
+  }
 }
 
 resource "aws_iam_role_policy" "api" {
@@ -85,8 +95,16 @@ resource "aws_lambda_function" "api" {
 
   environment {
     variables = {
-      DSQL_ENDPOINT = local.dsql_endpoint
-      ACCESS_KEY    = random_password.access_key.result
+      DSQL_ENDPOINT        = local.dsql_endpoint
+      AUTH_MODE            = "cognito"
+      SESSION_SECRET       = random_password.session_secret.result
+      SESSION_TTL_SECONDS  = tostring(var.session_ttl_hours * 3600)
+      ALLOWED_EMAILS       = join(",", local.allowed_emails)
+      LEGACY_DATA_OWNER    = lower(trimspace(var.legacy_data_owner))
+      COGNITO_DOMAIN       = local.cognito_domain_url
+      COGNITO_USER_POOL_ID = aws_cognito_user_pool.main.id
+      COGNITO_REGION       = var.aws_region
+      SSM_PREFIX           = local.ssm_prefix
     }
   }
 
@@ -96,6 +114,13 @@ resource "aws_lambda_function" "api" {
   }
 
   depends_on = [aws_iam_role_policy.api]
+
+  lifecycle {
+    precondition {
+      condition     = var.legacy_data_owner == "" || contains(local.allowed_emails, lower(trimspace(var.legacy_data_owner)))
+      error_message = "A legacy_data_owner csak az allowed_emails egyike (vagy üres) lehet."
+    }
+  }
 }
 
 resource "aws_lambda_function_url" "api" {

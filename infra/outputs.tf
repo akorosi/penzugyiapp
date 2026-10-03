@@ -8,10 +8,29 @@ output "api_url" {
   value       = "${local.website_origin}/api"
 }
 
-output "access_key" {
-  description = "Hozzáférési kulcs a belépéshez: terraform output -raw access_key"
-  value       = random_password.access_key.result
-  sensitive   = true
+output "cognito_domain" {
+  description = "A Cognito belépési domain."
+  value       = local.cognito_domain_url
+}
+
+output "google_oauth_redirect_uri" {
+  description = "Ezt kell megadni a Google OAuth kliensnél az „Authorized redirect URIs” alatt."
+  value       = "${local.cognito_domain_url}/oauth2/idpresponse"
+}
+
+output "google_oauth_javascript_origin" {
+  description = "Ezt kell megadni a Google OAuth kliensnél az „Authorized JavaScript origins” alatt."
+  value       = local.cognito_domain_url
+}
+
+output "cognito_user_pool_id" {
+  description = "A Cognito felhasználói készlet azonosítója."
+  value       = aws_cognito_user_pool.main.id
+}
+
+output "allowed_emails" {
+  description = "A belépésre jogosult e-mail címek."
+  value       = local.allowed_emails
 }
 
 output "dsql_endpoint" {

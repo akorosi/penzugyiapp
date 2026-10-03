@@ -37,6 +37,16 @@ resource "aws_cloudfront_origin_access_control" "api" {
   signing_protocol                  = "sigv4"
 }
 
+resource "aws_cloudfront_function" "auth_gate" {
+  name    = "${var.project_name}-auth-gate"
+  comment = "Munkamenet-süti ellenőrzése a statikus tartalom előtt"
+  runtime = "cloudfront-js-2.0"
+  publish = true
+  code = templatefile("${path.module}/functions/auth_gate.js", {
+    session_secret = random_password.session_secret.result
+  })
+}
+
 resource "aws_cloudfront_distribution" "web" {
   enabled             = true
   comment             = "${var.project_name} webes felület"
@@ -81,7 +91,15 @@ resource "aws_cloudfront_distribution" "web" {
   }
 
   default_cache_behavior {
-    target_origin_id       = local.s3_origin_id
+    target_origin_id = local.s3_origin_id
+
+    # Belépés-kapu: érvényes munkamenet nélkül a felület egyetlen fájlja sem
+    # töltődik be, a kérés a belépéshez irányul.
+    function_association {
+      event_type   = "viewer-request"
+      function_arn = aws_cloudfront_function.auth_gate.arn
+    }
+
     viewer_protocol_policy = "redirect-to-https"
     allowed_methods        = ["GET", "HEAD"]
     cached_methods         = ["GET", "HEAD"]

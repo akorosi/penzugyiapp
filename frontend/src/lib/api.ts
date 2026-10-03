@@ -30,26 +30,25 @@ function apiBase(): Promise<string> {
   return configPromise;
 }
 
-// ---------- hozzáférési kulcs ----------
+// ---------- hitelesítés ----------
+//
+// AWS-en a belépést a szerver kezeli (Cognito + Google): a munkamenet egy
+// HttpOnly sütiben van, amit a böngésző automatikusan küld — a JavaScript
+// tokent nem lát. Lejárt munkamenetnél (401) a belépési folyamatra irányítunk,
+// majd onnan vissza az aktuális nézetre.
 
-const KEY_STORAGE = "penzugyek.accessKey";
-export const UNAUTHORIZED_EVENT = "penzugyek:unauthorized";
-
-export function getAccessKey(): string {
-  try {
-    return localStorage.getItem(KEY_STORAGE) ?? "";
-  } catch {
-    return "";
-  }
+export interface Me {
+  email: string;
+  auth: "cognito" | "none";
 }
 
-export function setAccessKey(key: string | null) {
-  try {
-    if (key) localStorage.setItem(KEY_STORAGE, key);
-    else localStorage.removeItem(KEY_STORAGE);
-  } catch {
-    /* privát mód: csak a munkamenetre marad meg (nem tároljuk) */
-  }
+export function redirectToLogin() {
+  const next = window.location.pathname + window.location.search + window.location.hash;
+  window.location.assign(`/api/auth/login?next=${encodeURIComponent(next)}`);
+}
+
+export function logout() {
+  window.location.assign("/api/auth/logout");
 }
 
 // ---------- kérés-aláírás segédletek ----------
@@ -99,8 +98,8 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
   const base = await apiBase();
   const method = opts.method ?? "GET";
   const headers = new Headers();
-  const key = getAccessKey();
-  if (key) headers.set("X-Access-Key", key);
+  // CSRF védelem: a szerver a módosító kéréseknél megköveteli ezt a fejlécet.
+  headers.set("X-Requested-With", "penzugyek");
   if (opts.contentType) headers.set("Content-Type", opts.contentType);
   if (method !== "GET" && method !== "HEAD") {
     const hash = await sha256Hex(opts.body ?? new Uint8Array());
@@ -109,7 +108,12 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
 
   let res: Response;
   try {
-    res = await fetch(`${base}${path}`, { method, headers, body: opts.body as BodyInit | undefined });
+    res = await fetch(`${base}${path}`, {
+      method,
+      headers,
+      body: opts.body as BodyInit | undefined,
+      credentials: "same-origin",
+    });
   } catch {
     throw new ApiError("A szerver nem érhető el. Ellenőrizd a kapcsolatot.", 0);
   }
@@ -120,7 +124,7 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
     /* nincs JSON törzs */
   }
   if (!res.ok) {
-    if (res.status === 401) window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
+    if (res.status === 401) redirectToLogin();
     const msg =
       body && typeof body === "object" && "error" in body && typeof body.error === "string"
         ? body.error
@@ -137,6 +141,7 @@ const json = (method: string, data: unknown): RequestOptions => ({
 });
 
 export const api = {
+  me: () => request<Me>("/api/me"),
   listTransactions: () => request<Transaction[]>("/api/transactions"),
   listCategories: () => request<string[]>("/api/categories"),
 

@@ -3,8 +3,9 @@
 Két eseménytípust kezel:
   1. Lambda Function URL HTTP kérés (payload 2.0) → a Flask alkalmazásnak
      továbbítjuk egy minimális WSGI adapteren keresztül.
-  2. {"action": "migrate"} → idempotens sémalétrehozás az Aurora DSQL-ben.
-     A Terraform hívja meg telepítéskor (aws_lambda_invocation).
+  2. {"action": "migrate"} → idempotens sémalétrehozás az Aurora DSQL-ben, és
+     a tulajdonos nélküli (korábbi, egyfelhasználós) tételek átadása a
+     LEGACY_DATA_OWNER felhasználónak. A Terraform hívja meg telepítéskor.
 """
 
 from __future__ import annotations
@@ -12,10 +13,13 @@ from __future__ import annotations
 import base64
 import io
 import logging
+import os
 import sys
 from urllib.parse import unquote
 
 import db
+import repository
+from excel_parser import make_hash
 from main import app
 
 logger = logging.getLogger()
@@ -94,8 +98,10 @@ def _http(event: dict) -> dict:
 def handler(event, context):
     if isinstance(event, dict) and event.get("action") == "migrate":
         steps = db.migrate()
-        logger.info("Séma migráció kész: %s", steps)
-        return {"status": "ok", "steps": steps}
+        legacy_owner = os.environ.get("LEGACY_DATA_OWNER", "").strip().lower()
+        adopted = repository.adopt_legacy_rows(legacy_owner, make_hash)
+        logger.info("Séma migráció kész: %s; átadott régi tételek: %d", steps, adopted)
+        return {"status": "ok", "steps": steps, "adopted_legacy_rows": adopted}
     if isinstance(event, dict) and "requestContext" in event:
         return _http(event)
     logger.warning("Ismeretlen esemény, figyelmen kívül hagyva.")

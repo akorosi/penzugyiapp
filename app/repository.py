@@ -1,5 +1,10 @@
 """Adat-hozzáférési réteg (sima SQL, DSQL-kompatibilis: nincs idegen kulcs,
-nincs tömb-paraméter, a tranzakciók rövidek és darabolt írásúak)."""
+nincs tömb-paraméter, a tranzakciók rövidek és darabolt írásúak).
+
+Minden művelet egy tulajdonosra (a bejelentkezett felhasználó e-mail címére)
+szűkít: egy felhasználó csak a saját tételeit és al-attribútumait látja és
+módosíthatja. Az al-attribútumok tulajdonosa a hozzájuk tartozó tranzakcióé.
+"""
 
 from __future__ import annotations
 
@@ -13,6 +18,14 @@ from db import get_conn, run_in_transaction
 # Egy DSQL tranzakció legfeljebb 3000 sort módosíthat; tételenként legfeljebb
 # 2 sort írunk (tranzakció + opcionális al-attribútum), így ez bőven belefér.
 IMPORT_CHUNK = 500
+
+
+class NotFound(Exception):
+    pass
+
+
+class Invalid(Exception):
+    pass
 
 
 def _placeholders(n: int) -> str:
@@ -29,7 +42,7 @@ def _chunks(seq: list, size: int) -> Iterable[list]:
 def _build_tree(rows: list[dict]) -> dict[str, list[dict]]:
     """attribute sorok → {transaction_id: [gyökér csomópontok fa-szerkezetben]}"""
     nodes = {
-        r["id"]: {"id": str(r["id"]), "name": r["name"], "parent_id": str(r["parent_id"]) if r["parent_id"] else None, "children": [], "_tx": r["transaction_id"]}
+        r["id"]: {"id": str(r["id"]), "name": r["name"], "parent_id": str(r["parent_id"]) if r["parent_id"] else None, "children": []}
         for r in rows
     }
     roots: dict[str, list[dict]] = {}
@@ -41,8 +54,6 @@ def _build_tree(rows: list[dict]) -> dict[str, list[dict]]:
         elif r["parent_id"] is None:
             roots.setdefault(str(r["transaction_id"]), []).append(node)
         # árva csomópont (törölt szülő) → nem jelenítjük meg
-    for n in nodes.values():
-        n.pop("_tx", None)
     return roots
 
 
@@ -72,56 +83,77 @@ _TX_COLS = "id, date, tx_type, description, amount, main_category, category_sour
 _ATTR_COLS = "id, transaction_id, parent_id, name"
 
 
+def _tx_attrs(conn: psycopg.Connection, tx_id: str) -> list[dict]:
+    return conn.execute(
+        f"SELECT {_ATTR_COLS} FROM attributes WHERE transaction_id = %s ORDER BY created_at, id", (tx_id,)
+    ).fetchall()
+
+
+def _owned_tx_id_of_attribute(conn: psycopg.Connection, owner: str, attr_id: str) -> str:
+    """Az attribútum tranzakciójának azonosítója — ha a tranzakció a felhasználóé."""
+    row = conn.execute(
+        """SELECT a.transaction_id FROM attributes a JOIN transactions t ON t.id = a.transaction_id
+           WHERE a.id = %s AND t.owner = %s AND t.is_active""",
+        (attr_id, owner),
+    ).fetchone()
+    if not row:
+        raise NotFound("Az attribútum nem található.")
+    return str(row["transaction_id"])
+
+
 # ---------- olvasás ----------
 
-def list_transactions() -> list[dict]:
+def list_transactions(owner: str) -> list[dict]:
     conn = get_conn()
     txs = conn.execute(
-        f"SELECT {_TX_COLS} FROM transactions WHERE is_active ORDER BY date DESC, created_at DESC, id DESC"
+        f"SELECT {_TX_COLS} FROM transactions WHERE owner = %s AND is_active ORDER BY date DESC, created_at DESC, id DESC",
+        (owner,),
     ).fetchall()
     attrs = conn.execute(
-        f"""SELECT a.{_ATTR_COLS.replace(', ', ', a.')}
-            FROM attributes a JOIN transactions t ON t.id = a.transaction_id
-            WHERE t.is_active
-            ORDER BY a.created_at, a.id"""
+        """SELECT a.id, a.transaction_id, a.parent_id, a.name
+           FROM attributes a JOIN transactions t ON t.id = a.transaction_id
+           WHERE t.owner = %s AND t.is_active
+           ORDER BY a.created_at, a.id""",
+        (owner,),
     ).fetchall()
     trees = _build_tree(attrs)
     return [_serialize_tx(t, trees.get(str(t["id"]), [])) for t in txs]
 
 
-def get_transaction(conn: psycopg.Connection, tx_id: str) -> dict | None:
-    row = conn.execute(f"SELECT {_TX_COLS} FROM transactions WHERE id = %s AND is_active", (tx_id,)).fetchone()
+def get_transaction(conn: psycopg.Connection, owner: str, tx_id: str) -> dict | None:
+    row = conn.execute(
+        f"SELECT {_TX_COLS} FROM transactions WHERE id = %s AND owner = %s AND is_active", (tx_id, owner)
+    ).fetchone()
     if not row:
         return None
-    attrs = conn.execute(
-        f"SELECT {_ATTR_COLS} FROM attributes WHERE transaction_id = %s ORDER BY created_at, id", (tx_id,)
-    ).fetchall()
-    return _serialize_tx(row, _build_tree(attrs).get(str(row["id"]), []))
+    return _serialize_tx(row, _build_tree(_tx_attrs(conn, tx_id)).get(str(row["id"]), []))
 
 
-def list_categories() -> list[str]:
+def list_categories(owner: str) -> list[str]:
     rows = get_conn().execute(
-        "SELECT DISTINCT main_category FROM transactions WHERE is_active AND main_category IS NOT NULL"
+        "SELECT DISTINCT main_category FROM transactions WHERE owner = %s AND is_active AND main_category IS NOT NULL",
+        (owner,),
     ).fetchall()
     return sorted({r["main_category"] for r in rows if r["main_category"]})
 
 
 # ---------- import ----------
 
-def existing_hashes(hashes: list[str]) -> set[str]:
+def existing_hashes(owner: str, hashes: list[str]) -> set[str]:
     """Szándékosan NINCS is_active szűrés: a törölt (soft delete) tételek hash-e is
     számít, így egy korábban törölt tétel újrafeltöltéskor sem kerül vissza."""
     found: set[str] = set()
     conn = get_conn()
     for chunk in _chunks(hashes, IMPORT_CHUNK):
         rows = conn.execute(
-            f"SELECT tx_hash FROM transactions WHERE tx_hash IN ({_placeholders(len(chunk))})", chunk
+            f"SELECT tx_hash FROM transactions WHERE owner = %s AND tx_hash IN ({_placeholders(len(chunk))})",
+            [owner, *chunk],
         ).fetchall()
         found.update(r["tx_hash"] for r in rows)
     return found
 
 
-def insert_transactions(items: list[dict]) -> int:
+def insert_transactions(owner: str, items: list[dict]) -> int:
     """items: {date, tx_type, description, amount, tx_hash, main_category,
     category_source, sub_category}. Darabonként külön tranzakcióban ír."""
     inserted = 0
@@ -130,7 +162,7 @@ def insert_transactions(items: list[dict]) -> int:
         for it in chunk:
             tx_id = uuid.uuid4()
             tx_rows.append(
-                (tx_id, it["date"], it["tx_type"], it["description"], it["amount"],
+                (tx_id, owner, it["date"], it["tx_type"], it["description"], it["amount"],
                  it.get("main_category"), it.get("category_source", "none"), it["tx_hash"])
             )
             if it.get("sub_category"):
@@ -138,8 +170,8 @@ def insert_transactions(items: list[dict]) -> int:
 
         def write(conn: psycopg.Connection, tx_rows=tx_rows, attr_rows=attr_rows) -> None:
             conn.execute(
-                "INSERT INTO transactions (id, date, tx_type, description, amount, main_category, category_source, tx_hash) VALUES "
-                + ", ".join(["(%s, %s, %s, %s, %s, %s, %s, %s)"] * len(tx_rows)),
+                "INSERT INTO transactions (id, owner, date, tx_type, description, amount, main_category, category_source, tx_hash) VALUES "
+                + ", ".join(["(%s, %s, %s, %s, %s, %s, %s, %s, %s)"] * len(tx_rows)),
                 [v for row in tx_rows for v in row],
             )
             if attr_rows:
@@ -154,43 +186,63 @@ def insert_transactions(items: list[dict]) -> int:
     return inserted
 
 
+def adopt_legacy_rows(owner: str, hash_fn) -> int:
+    """A többfelhasználós verzió előtti (tulajdonos nélküli) tételek átadása egy
+    felhasználónak; a duplikátum-azonosítót a tulajdonossal együtt újraszámolja."""
+    if not owner:
+        return 0
+    adopted = 0
+    while True:
+        rows = get_conn().execute(
+            f"SELECT id, date, tx_type, description, amount FROM transactions WHERE owner IS NULL LIMIT {IMPORT_CHUNK}"
+        ).fetchall()
+        if not rows:
+            return adopted
+
+        def write(conn: psycopg.Connection, rows=rows) -> None:
+            for r in rows:
+                rec = {"date": r["date"], "tx_type": r["tx_type"] or "", "description": r["description"] or "", "amount": r["amount"]}
+                conn.execute(
+                    "UPDATE transactions SET owner = %s, tx_hash = %s WHERE id = %s AND owner IS NULL",
+                    (owner, hash_fn(rec, owner), r["id"]),
+                )
+
+        run_in_transaction(write)
+        adopted += len(rows)
+
+
 # ---------- módosítás ----------
 
-def set_main_category(tx_id: str, value: str | None) -> dict | None:
+def set_main_category(owner: str, tx_id: str, value: str | None) -> dict | None:
     def op(conn: psycopg.Connection):
         cur = conn.execute(
             """UPDATE transactions SET main_category = %s, category_source = 'manual', updated_at = now()
-               WHERE id = %s AND is_active""",
-            (value, tx_id),
+               WHERE id = %s AND owner = %s AND is_active""",
+            (value, tx_id, owner),
         )
         if cur.rowcount == 0:
             return None
-        return get_transaction(conn, tx_id)
+        return get_transaction(conn, owner, tx_id)
 
     return run_in_transaction(op)
 
 
-def soft_delete_transaction(tx_id: str) -> bool:
+def soft_delete_transaction(owner: str, tx_id: str) -> bool:
     def op(conn: psycopg.Connection) -> bool:
         cur = conn.execute(
-            "UPDATE transactions SET is_active = FALSE, updated_at = now() WHERE id = %s AND is_active", (tx_id,)
+            "UPDATE transactions SET is_active = FALSE, updated_at = now() WHERE id = %s AND owner = %s AND is_active",
+            (tx_id, owner),
         )
         return cur.rowcount > 0
 
     return run_in_transaction(op)
 
 
-class NotFound(Exception):
-    pass
-
-
-class Invalid(Exception):
-    pass
-
-
-def add_attribute(tx_id: str, name: str, parent_id: str | None) -> dict:
+def add_attribute(owner: str, tx_id: str, name: str, parent_id: str | None) -> dict:
     def op(conn: psycopg.Connection) -> dict:
-        if not conn.execute("SELECT 1 FROM transactions WHERE id = %s AND is_active", (tx_id,)).fetchone():
+        if not conn.execute(
+            "SELECT 1 FROM transactions WHERE id = %s AND owner = %s AND is_active", (tx_id, owner)
+        ).fetchone():
             raise NotFound("A tranzakció nem található.")
         if parent_id:
             parent = conn.execute("SELECT transaction_id FROM attributes WHERE id = %s", (parent_id,)).fetchone()
@@ -206,17 +258,11 @@ def add_attribute(tx_id: str, name: str, parent_id: str | None) -> dict:
     return run_in_transaction(op)
 
 
-def rename_attribute(attr_id: str, name: str) -> dict:
+def rename_attribute(owner: str, attr_id: str, name: str) -> dict:
     def op(conn: psycopg.Connection) -> dict:
-        row = conn.execute("SELECT transaction_id FROM attributes WHERE id = %s", (attr_id,)).fetchone()
-        if not row:
-            raise NotFound("Az attribútum nem található.")
+        tx_id = _owned_tx_id_of_attribute(conn, owner, attr_id)
         conn.execute("UPDATE attributes SET name = %s WHERE id = %s", (name, attr_id))
-        attrs = conn.execute(
-            f"SELECT {_ATTR_COLS} FROM attributes WHERE transaction_id = %s ORDER BY created_at, id",
-            (row["transaction_id"],),
-        ).fetchall()
-        tree = _build_tree(attrs)
+        tree = _build_tree(_tx_attrs(conn, tx_id))
 
         def find(nodes: list[dict]) -> dict | None:
             for n in nodes:
@@ -227,22 +273,18 @@ def rename_attribute(attr_id: str, name: str) -> dict:
                     return hit
             return None
 
-        return find(tree.get(str(row["transaction_id"]), [])) or {"id": attr_id, "name": name, "parent_id": None, "children": []}
+        return find(tree.get(tx_id, [])) or {"id": attr_id, "name": name, "parent_id": None, "children": []}
 
     return run_in_transaction(op)
 
 
-def delete_attribute(attr_id: str) -> list[str]:
+def delete_attribute(owner: str, attr_id: str) -> list[str]:
     """Törli a csomópontot és a teljes alatta lévő ágat (idegen kulcs/kaszkád
     nélkül, ezért az alkalmazás gyűjti össze a leszármazottakat)."""
 
     def op(conn: psycopg.Connection) -> list[str]:
-        row = conn.execute("SELECT transaction_id FROM attributes WHERE id = %s", (attr_id,)).fetchone()
-        if not row:
-            raise NotFound("Az attribútum nem található.")
-        rows = conn.execute(
-            "SELECT id, parent_id FROM attributes WHERE transaction_id = %s", (row["transaction_id"],)
-        ).fetchall()
+        tx_id = _owned_tx_id_of_attribute(conn, owner, attr_id)
+        rows = conn.execute("SELECT id, parent_id FROM attributes WHERE transaction_id = %s", (tx_id,)).fetchall()
         children: dict[str, list[str]] = {}
         for r in rows:
             if r["parent_id"]:

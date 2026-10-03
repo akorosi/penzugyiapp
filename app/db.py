@@ -122,6 +122,7 @@ SCHEMA_TABLES = [
     """
     CREATE TABLE IF NOT EXISTS transactions (
         id              UUID PRIMARY KEY,
+        owner           TEXT,
         date            DATE NOT NULL,
         tx_type         TEXT,
         description     TEXT,
@@ -145,8 +146,16 @@ SCHEMA_TABLES = [
     """,
 ]
 
+# Utólag hozzáadott oszlopok (korábbi sémán ALTER TABLE-lel pótoljuk).
+# DSQL-ben csak NULL-ozható, alapérték nélküli oszlop adható hozzá.
+SCHEMA_COLUMNS = [
+    # A tétel tulajdonosa (a bejelentkezett felhasználó e-mail címe, kisbetűvel).
+    ("transactions", "owner", "TEXT"),
+]
+
 # (index neve, tábla, oszlopok)
 SCHEMA_INDEXES = [
+    ("ix_transactions_owner_date", "transactions", "owner, date"),
     ("ix_transactions_date", "transactions", "date"),
     ("ix_transactions_main_category", "transactions", "main_category"),
     ("ix_attributes_transaction_id", "attributes", "transaction_id"),
@@ -161,6 +170,13 @@ def migrate() -> list[str]:
     for ddl in SCHEMA_TABLES:
         conn.execute(ddl)
         done.append(" ".join(ddl.split())[:60] + "…")
+    for table, column, coltype in SCHEMA_COLUMNS:
+        exists = conn.execute(
+            "SELECT 1 FROM information_schema.columns WHERE table_name = %s AND column_name = %s", (table, column)
+        ).fetchone()
+        if not exists:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
+            done.append(f"ALTER TABLE {table} ADD COLUMN {column}")
     for name, table, cols in SCHEMA_INDEXES:
         exists = conn.execute("SELECT 1 FROM pg_indexes WHERE indexname = %s", (name,)).fetchone()
         if exists:
