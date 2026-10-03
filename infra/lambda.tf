@@ -6,8 +6,8 @@
 
 locals {
   function_name = "${var.project_name}-api"
-  # Az S3 statikus weboldal originje — csak innen engedjük a böngészős hívásokat.
-  website_origin = "http://${aws_s3_bucket_website_configuration.web.website_endpoint}"
+  # A CloudFront-on kiszolgált weboldal originje — csak innen engedjük a böngészős hívásokat.
+  website_origin = "https://${aws_cloudfront_distribution.web.domain_name}"
 }
 
 # Hozzáférési kulcs: a frontend "Authorization: Bearer <kulcs>" fejlécben küldi.

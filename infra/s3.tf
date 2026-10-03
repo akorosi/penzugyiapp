@@ -1,6 +1,7 @@
-# ---------- Statikus tartalom: Amazon S3 statikus weboldal ----------
+# ---------- Statikus tartalom: Amazon S3 (privát bucket) ----------
 #
 # A lebuildelt React felület (frontend/dist) és a futásidejű config.json.
+# Kiszolgálás HTTPS-en, CloudFronton keresztül (lásd cloudfront.tf).
 
 resource "random_id" "bucket_suffix" {
   byte_length = 4
@@ -18,50 +19,37 @@ resource "aws_s3_bucket_ownership_controls" "web" {
   }
 }
 
-# A statikus weboldal-végponthoz nyilvános olvasás kell (csak bucket policy-n
-# keresztül; ACL-ek tiltva).
+# A bucket teljesen privát: csak a CloudFront olvashatja (Origin Access
+# Control), közvetlen S3 elérés nincs.
 resource "aws_s3_bucket_public_access_block" "web" {
   bucket                  = aws_s3_bucket.web.id
   block_public_acls       = true
   ignore_public_acls      = true
-  block_public_policy     = false
-  restrict_public_buckets = false
+  block_public_policy     = true
+  restrict_public_buckets = true
 }
 
-data "aws_iam_policy_document" "web_public_read" {
+data "aws_iam_policy_document" "web_cloudfront_read" {
   statement {
-    sid       = "PublicReadGetObject"
+    sid       = "AllowCloudFrontRead"
     actions   = ["s3:GetObject"]
     resources = ["${aws_s3_bucket.web.arn}/*"]
     principals {
-      type        = "*"
-      identifiers = ["*"]
+      type        = "Service"
+      identifiers = ["cloudfront.amazonaws.com"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "AWS:SourceArn"
+      values   = [aws_cloudfront_distribution.web.arn]
     }
   }
 }
 
 resource "aws_s3_bucket_policy" "web" {
   bucket     = aws_s3_bucket.web.id
-  policy     = data.aws_iam_policy_document.web_public_read.json
+  policy     = data.aws_iam_policy_document.web_cloudfront_read.json
   depends_on = [aws_s3_bucket_public_access_block.web]
-}
-
-resource "aws_s3_bucket_website_configuration" "web" {
-  bucket = aws_s3_bucket.web.id
-
-  index_document {
-    suffix = "index.html"
-  }
-  error_document {
-    key = "index.html"
-  }
-
-  lifecycle {
-    precondition {
-      condition     = fileexists("${var.frontend_dist_dir}/index.html")
-      error_message = "Nincs lebuildelt frontend. Futtasd előbb: make build (vagy cd frontend && npm ci && npm run build)."
-    }
-  }
 }
 
 locals {

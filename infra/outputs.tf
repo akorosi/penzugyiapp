@@ -1,5 +1,5 @@
 output "website_url" {
-  description = "A webes felület címe (S3 statikus weboldal)."
+  description = "A webes felület címe (CloudFront, HTTPS)."
   value       = local.website_origin
 }
 
@@ -32,4 +32,9 @@ output "web_bucket" {
 output "migration_result" {
   description = "A telepítéskor lefutott sémamigráció eredménye."
   value       = jsondecode(aws_lambda_invocation.migrate.result)
+}
+
+output "cloudfront_distribution_id" {
+  description = "A CloudFront disztribúció azonosítója (pl. kézi cache-érvénytelenítéshez)."
+  value       = aws_cloudfront_distribution.web.id
 }

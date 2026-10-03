@@ -13,8 +13,8 @@ is futtatható.
 ## Architektúra (AWS)
 
 ```
- Böngésző ──HTTP──▶ Amazon S3 statikus weboldal      (React + Radix UI felület, config.json)
-    │
+ Böngésző ──HTTPS──▶ Amazon CloudFront ──OAC──▶ Amazon S3 (privát bucket)
+    │                                            (React + Radix UI felület, config.json)
     └──HTTPS──▶ Lambda Function URL ──▶ AWS Lambda   (Python 3.13, arm64 — Flask REST API)
                                            │  IAM auth token, TLS
                                            ▼
@@ -23,7 +23,8 @@ is futtatható.
 
 | Réteg | Szolgáltatás | Free Tier |
 |---|---|---|
-| Statikus tartalom | **Amazon S3** statikus weboldal-hosting (`frontend/dist` + `config.json`) | 5 GB, 20 000 GET / 2 000 PUT havonta¹ |
+| Statikus tartalom | **Amazon S3** privát bucket (`frontend/dist` + `config.json`) | 5 GB, 20 000 GET / 2 000 PUT havonta¹ |
+| HTTPS kiszolgálás | **Amazon CloudFront** (alapértelmezett `*.cloudfront.net` tanúsítvány) | mindig ingyenes: 1 TB adatforgalom és 10 millió kérés havonta |
 | Dinamikus réteg | **AWS Lambda** + **Function URL** (nincs API Gateway) | mindig ingyenes: 1 millió kérés és 400 000 GB-mp havonta |
 | Adatbázis | **Amazon Aurora DSQL** | mindig ingyenes: 100 000 DPU és 1 GB tárhely havonta |
 | Naplók | **CloudWatch Logs** (14 napos megőrzés) | mindig ingyenes: 5 GB havonta |
@@ -31,17 +32,25 @@ is futtatható.
 
 ¹ Az S3 a 2025. július 15. előtt nyitott fiókoknál 12 hónapig ingyenes; az
 újabb fiókok Free Tier kreditet kapnak, amiből ez a néhány MB-os,
-alacsony forgalmú tárolás fillérekbe kerül. Szándékosan **nincs** VPC, NAT
-Gateway, API Gateway vagy CloudFront, így nincs óradíjas erőforrás.
+alacsony forgalmú tárolás fillérekbe kerül (a CloudFront gyorsítótára
+miatt az S3-hoz alig jut kérés). Szándékosan **nincs** VPC, NAT Gateway
+vagy API Gateway, így nincs óradíjas erőforrás.
 
 **Hogyan működik:**
 
-- A felület egy statikus React build. Az API címét futásidőben, a bucketben
+- A felület egy statikus React build, amit a CloudFront HTTPS-en szolgál ki
+  (HTTP → HTTPS átirányítás, tömörítés, HTTP/3, AWS által kezelt
+  biztonsági fejlécek: HSTS, X-Frame-Options, X-Content-Type-Options…). A
+  bucket teljesen privát; csak a CloudFront olvashatja Origin Access
+  Controllal. A hash-elt assetek egy évig, az `index.html` és a
+  `config.json` csak 1 másodpercig gyorsítótárazódik, így telepítés után
+  nincs szükség cache-érvénytelenítésre.
+- Az API címét futásidőben, a bucketben
   lévő `config.json`-ból olvassa — ezt a Terraform írja a Lambda Function
   URL alapján, így a frontendet nem kell környezetenként újrabuildelni.
 - A Lambda a Flask alkalmazást futtatja egy beépített WSGI adapterrel
-  (`app/lambda_handler.py`). A Function URL CORS-beállítása csak az S3
-  weboldal originjét engedi.
+  (`app/lambda_handler.py`). A Function URL CORS-beállítása csak a
+  CloudFront-os weboldal originjét engedi.
 - **Hitelesítés:** a Function URL nyilvános, ezért minden `/api` kérésnek a
   Terraform által generált **hozzáférési kulcsot** kell küldenie
   (`Authorization: Bearer …`). A felület belépéskor kéri.
@@ -65,7 +74,9 @@ make deploy
 A `make deploy` lépései: frontend build (`npm ci && npm run build`), Lambda
 csomag (`scripts/build_lambda.sh` — a függőségeket a Lambda arm64
 környezetére tölti le, Docker nélkül), majd `terraform init` és
-`terraform apply`. A végén kiírja a weboldal címét. A belépéshez szükséges
+`terraform apply`. A végén kiírja a weboldal címét
+(`https://….cloudfront.net`; az első telepítésnél a CloudFront
+disztribúció kiépülése néhány percig tart). A belépéshez szükséges
 kulcs:
 
 ```bash
@@ -78,10 +89,6 @@ Lambdát, ha a csomag tartalma változott.
 
 **Megjegyzések:**
 
-- Ha a fiókban be van kapcsolva a fiókszintű *S3 Block Public Access*, az
-  `apply` a bucket policy-nál hibát ad. A statikus weboldal-hostinghoz ezt
-  a fiókszintű beállítást ki kell kapcsolni (a bucket ACL-jei ettől még
-  tiltva maradnak, csak a bucket policy-n keresztüli olvasás engedélyezett).
 - A Terraform állapot (`infra/terraform.tfstate`) helyben tárolódik, és
   **titkot tartalmaz** (a hozzáférési kulcsot) — ne kerüljön gitbe (a
   `.gitignore` kizárja). Több gépről történő kezeléshez érdemes S3
@@ -89,9 +96,8 @@ Lambdát, ha a csomag tartalma változott.
 - Az első `terraform init` után keletkező `infra/.terraform.lock.hcl`
   fájlt érdemes commitolni.
 - **Kulcscsere:** `terraform -chdir=infra apply -replace=random_password.access_key`.
-- Az S3 statikus weboldal-végpont csak HTTP-t támogat (az API hívások
-  HTTPS-en mennek). HTTPS-hez a következő lépés egy CloudFront disztribúció
-  lehet (szintén Free Tier).
+- Saját domainhez a CloudFront disztribúcióhoz egy ACM tanúsítvány
+  (us-east-1 régióban, díjmentes) és `aliases` adható.
 
 ### Adatátköltöztetés a korábbi (SQLite-os) verzióból
 
@@ -229,7 +235,7 @@ kézzel az UI-n.
 |---|---|
 | `frontend/` | React 19 + TypeScript + Vite felület (Radix Themes, Radix primitívek, Recharts) |
 | `app/` | Python backend: `main.py` (Flask REST API), `lambda_handler.py` (Lambda belépési pont + WSGI adapter), `db.py` (kapcsolat + séma), `repository.py` (SQL), `excel_parser.py`, `categorize.py`, `import_sqlite.py` |
-| `infra/` | Terraform: `s3.tf`, `lambda.tf`, `dsql.tf`, `variables.tf`, `outputs.tf` |
+| `infra/` | Terraform: `s3.tf`, `cloudfront.tf`, `lambda.tf`, `dsql.tf`, `variables.tf`, `outputs.tf` |
 | `scripts/build_lambda.sh` | Lambda csomag összeállítása (`build/lambda/`) |
 | `Makefile` | `build`, `deploy`, `destroy`, `test` |
 
