@@ -1,5 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import {
+  Avatar,
   Badge,
   Box,
   Button,
@@ -11,6 +12,7 @@ import {
   Heading,
   IconButton,
   Skeleton,
+  Spinner,
   Tabs,
   Text,
 } from "@radix-ui/themes";
@@ -18,6 +20,7 @@ import {
   BarChartIcon,
   CrossCircledIcon,
   DesktopIcon,
+  ExitIcon,
   MoonIcon,
   ReloadIcon,
   SunIcon,
@@ -29,7 +32,7 @@ import { FilterBar } from "./components/FilterBar";
 import { LedgerTable } from "./components/LedgerTable";
 import { UploadDialog } from "./components/UploadDialog";
 import { useToast } from "./components/Toaster";
-import { api } from "./lib/api";
+import { api, logout } from "./lib/api";
 import { applyFilters, computeTotals, expensesByCategory, hasActiveFilters } from "./lib/ledger";
 import { buildCategoryColorIndex } from "./lib/palette";
 import { EMPTY_FILTERS, type Filters, type Transaction } from "./lib/types";
@@ -51,7 +54,7 @@ export function App({ appearance }: Props) {
   const data = useLedgerData();
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   // Kijelölésből kivett tételek — csak munkamenet-szintű állapot, nem kerül mentésre.
-  const [excludedIds, setExcludedIds] = useState<Set<number>>(() => new Set());
+  const [excludedIds, setExcludedIds] = useState<Set<string>>(() => new Set());
   const [view, setView] = useState<View>(readView);
 
   useEffect(() => {
@@ -73,7 +76,7 @@ export function App({ appearance }: Props) {
     [data.transactions],
   );
 
-  const toggle = useCallback((id: number, inc: boolean) => {
+  const toggle = useCallback((id: string, inc: boolean) => {
     setExcludedIds((prev) => {
       const next = new Set(prev);
       if (inc) next.delete(id);
@@ -82,7 +85,7 @@ export function App({ appearance }: Props) {
     });
   }, []);
 
-  const toggleMany = useCallback((ids: number[], inc: boolean) => {
+  const toggleMany = useCallback((ids: string[], inc: boolean) => {
     setExcludedIds((prev) => {
       const next = new Set(prev);
       for (const id of ids) {
@@ -118,6 +121,7 @@ export function App({ appearance }: Props) {
     }
   };
 
+  const unauthorized = data.status === "unauthorized";
   const loading = data.status === "loading";
   const isEmpty = data.status === "ready" && data.transactions.length === 0;
   const excludedInView = filtered.length - included.length;
@@ -160,11 +164,31 @@ export function App({ appearance }: Props) {
             <Flex align="center" gap="2">
               <DropdownMenu.Root>
                 <DropdownMenu.Trigger>
-                  <IconButton variant="ghost" color="gray" aria-label="Megjelenés">
-                    <ThemeIcon width="18" height="18" />
-                  </IconButton>
+                  {data.me ? (
+                    <IconButton variant="ghost" color="gray" radius="full" aria-label={`Fiók és beállítások (${data.me.email})`}>
+                      <Avatar size="2" radius="full" fallback={data.me.email.charAt(0).toUpperCase()} />
+                    </IconButton>
+                  ) : (
+                    <IconButton variant="ghost" color="gray" aria-label="Beállítások">
+                      <ThemeIcon width="18" height="18" />
+                    </IconButton>
+                  )}
                 </DropdownMenu.Trigger>
                 <DropdownMenu.Content align="end">
+                  {data.me && (
+                    <>
+                      <Box px="3" py="2" maxWidth="260px">
+                        <Text as="div" size="1" color="gray">
+                          {data.me.auth === "cognito" ? "Bejelentkezve" : "Helyi mód (belépés nélkül)"}
+                        </Text>
+                        <Text as="div" size="2" weight="medium" truncate>
+                          {data.me.email}
+                        </Text>
+                      </Box>
+                      <DropdownMenu.Separator />
+                    </>
+                  )}
+                  <DropdownMenu.Label>Megjelenés</DropdownMenu.Label>
                   <DropdownMenu.RadioGroup
                     value={appearance.pref}
                     onValueChange={(v) => appearance.setPref(v as AppearancePref)}
@@ -179,9 +203,17 @@ export function App({ appearance }: Props) {
                       <DesktopIcon /> Rendszer szerint
                     </DropdownMenu.RadioItem>
                   </DropdownMenu.RadioGroup>
+                  {data.me?.auth === "cognito" && (
+                    <>
+                      <DropdownMenu.Separator />
+                      <DropdownMenu.Item color="red" onSelect={logout}>
+                        <ExitIcon /> Kijelentkezés
+                      </DropdownMenu.Item>
+                    </>
+                  )}
                 </DropdownMenu.Content>
               </DropdownMenu.Root>
-              <UploadDialog trigger={importButton} onImported={onImported} />
+              {!unauthorized && <UploadDialog trigger={importButton} onImported={onImported} />}
             </Flex>
           </Flex>
         </Container>
@@ -204,9 +236,16 @@ export function App({ appearance }: Props) {
               </Callout.Root>
             )}
 
-            <SummaryCards totals={totals} loading={loading} />
+            {unauthorized ? (
+              <Flex direction="column" align="center" gap="3" py="9" role="status">
+                <Spinner size="3" />
+                <Text color="gray">Átirányítás a belépéshez…</Text>
+              </Flex>
+            ) : (
+              <SummaryCards totals={totals} loading={loading} />
+            )}
 
-            {isEmpty ? (
+            {unauthorized ? null : isEmpty ? (
               <Card size="4">
                 <Flex direction="column" align="center" gap="3" py="6" className="empty-state">
                   <span className="empty-state__icon" aria-hidden>

@@ -2,14 +2,14 @@ export type Kind = "bevétel" | "kiadás" | "megtakarítás";
 export type CategorySource = "auto" | "manual" | "none";
 
 export interface AttributeNode {
-  id: number;
+  id: string; // UUID
   name: string;
-  parent_id: number | null;
+  parent_id: string | null;
   children: AttributeNode[];
 }
 
 export interface Transaction {
-  id: number;
+  id: string; // UUID
   date: string; // YYYY-MM-DD
   tx_type: string | null;
   description: string | null;

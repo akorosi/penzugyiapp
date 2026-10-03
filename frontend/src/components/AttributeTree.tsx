@@ -6,7 +6,7 @@ import type { AttributeNode } from "../lib/types";
 import { useToast } from "./Toaster";
 
 interface Props {
-  txId: number;
+  txId: string;
   nodes: AttributeNode[];
   onChanged: () => Promise<void> | void;
 }
@@ -58,7 +58,7 @@ function countDescendants(n: AttributeNode): number {
   return n.children.reduce((s, c) => s + 1 + countDescendants(c), 0);
 }
 
-function TagNode({ txId, node, onChanged }: { txId: number; node: AttributeNode; onChanged: Props["onChanged"] }) {
+function TagNode({ txId, node, onChanged }: { txId: string; node: AttributeNode; onChanged: Props["onChanged"] }) {
   const toast = useToast();
   const [open, setOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);

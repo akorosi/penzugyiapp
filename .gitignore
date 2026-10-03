@@ -1,8 +1,12 @@
-app/uploads/*
-!app/uploads/.gitkeep
 __pycache__/
 *.pyc
 .DS_Store
 app/web/
 node_modules/
-app/data/
+build/
+infra/.terraform/
+infra/.build/
+infra/*.tfstate
+infra/*.tfstate.*
+infra/terraform.tfvars
+infra/crash.log

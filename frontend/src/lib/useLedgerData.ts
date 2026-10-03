@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { api } from "./api";
+import { api, ApiError, type Me } from "./api";
 import type { Transaction } from "./types";
 
-type Status = "loading" | "ready" | "error";
+type Status = "loading" | "ready" | "error" | "unauthorized";
 
 /** A tranzakciók és a fő attribútum-lista központi állapota. */
 export function useLedgerData() {
@@ -10,6 +10,7 @@ export function useLedgerData() {
   const [categories, setCategories] = useState<string[]>([]);
   const [status, setStatus] = useState<Status>("loading");
   const [error, setError] = useState<string | null>(null);
+  const [me, setMe] = useState<Me | null>(null);
 
   const refreshCategories = useCallback(async () => {
     try {
@@ -21,11 +22,16 @@ export function useLedgerData() {
 
   const reload = useCallback(async () => {
     try {
-      const [txs] = await Promise.all([api.listTransactions(), refreshCategories()]);
+      const [txs, who] = await Promise.all([api.listTransactions(), api.me(), refreshCategories()]);
       setTransactions(txs);
+      setMe(who);
       setStatus("ready");
       setError(null);
     } catch (e) {
+      if (e instanceof ApiError && e.status === 401) {
+        setStatus("unauthorized"); // az api már átirányít a belépéshez
+        return;
+      }
       setError((e as Error).message);
       setStatus("error");
     }
@@ -40,9 +46,19 @@ export function useLedgerData() {
     setTransactions((prev) => prev.map((t) => (t.id === tx.id ? tx : t)));
   }, []);
 
-  const removeTransaction = useCallback((id: number) => {
+  const removeTransaction = useCallback((id: string) => {
     setTransactions((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
-  return { transactions, categories, status, error, reload, refreshCategories, replaceTransaction, removeTransaction };
+  return {
+    transactions,
+    categories,
+    status,
+    error,
+    me,
+    reload,
+    refreshCategories,
+    replaceTransaction,
+    removeTransaction,
+  };
 }

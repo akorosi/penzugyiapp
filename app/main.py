@@ -1,34 +1,29 @@
+"""Pénzügyek REST API (Flask).
+
+Futtatási módok:
+  - AWS: Lambda függvény (lambda_handler.py), CloudFronton keresztül; az
+    adatbázis Aurora DSQL, a belépés Amazon Cognito (Google), lásd auth.py.
+  - Helyi: `python main.py` (Docker Compose), PostgreSQL-lel, belépés nélkül
+    (AUTH_MODE=none); ilyenkor a lebuildelt felületet is ez a szerver szolgálja ki.
+"""
+
+import html
 import os
-from datetime import datetime
+import secrets
+import uuid
 
-from flask import Flask, request, jsonify, send_from_directory, abort
-from werkzeug.utils import secure_filename
+from flask import Flask, abort, g, jsonify, make_response, redirect, request, send_from_directory
 
-from db import Base, engine, SessionLocal
-from models import Transaction, Attribute
-from excel_parser import parse_cib_statement, make_hash
+import auth
+import repository as repo
 from categorize import auto_categorize
+from excel_parser import make_hash, parse_cib_statement
 
-Base.metadata.create_all(bind=engine)
+ALLOWED_EXT = {".xls", ".xlsx"}
+MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # a Lambda Function URL kérésmérete max. 6 MB
+PUBLIC_API_PATHS = ("/api/auth/", "/api/health")
 
-
-def _ensure_schema():
-    """Ha egy korábbi verzióból származó adatbázison hiányzik az 'is_active'
-    oszlop (soft delete-hez), pótoljuk — create_all csak hiányzó táblákat hoz
-    létre, meglévő táblát nem módosít."""
-    with engine.connect() as conn:
-        cols = [row[1] for row in conn.exec_driver_sql("PRAGMA table_info(transactions)").fetchall()]
-        if "is_active" not in cols:
-            conn.exec_driver_sql("ALTER TABLE transactions ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT 1")
-            conn.commit()
-
-
-_ensure_schema()
-
-# A webes felület a frontend/ könyvtárban lévő React (Radix UI) alkalmazás
-# statikus build kimenete (npm run build → frontend/dist). Docker-ben a
-# multi-stage build ide (/app/web) másolja; helyi futtatásnál a
-# frontend/dist könyvtárat használjuk.
+# Helyi futtatásnál a lebuildelt React felület (frontend/dist) kiszolgálása.
 _HERE = os.path.dirname(os.path.abspath(__file__))
 WEB_DIR = os.environ.get("WEB_DIR") or next(
     (d for d in (os.path.join(_HERE, "web"), os.path.join(_HERE, "..", "frontend", "dist")) if os.path.isdir(d)),
@@ -36,56 +31,187 @@ WEB_DIR = os.environ.get("WEB_DIR") or next(
 )
 
 app = Flask(__name__, static_folder=None)
-UPLOAD_DIR = os.environ.get("UPLOAD_DIR", "/app/uploads")
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-ALLOWED_EXT = {".xls", ".xlsx"}
+app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
+app.json.ensure_ascii = False
 
 
-# ---------- szerializálás ----------
-
-def serialize_attribute(attr: Attribute) -> dict:
-    children = sorted(attr.children, key=lambda a: a.id)
-    return {
-        "id": attr.id,
-        "name": attr.name,
-        "parent_id": attr.parent_id,
-        "children": [serialize_attribute(c) for c in children],
-    }
+def _error(msg: str, status: int):
+    return jsonify({"error": msg}), status
 
 
-def serialize_transaction(tx: Transaction) -> dict:
-    top_level = sorted([a for a in tx.attributes if a.parent_id is None], key=lambda a: a.id)
-    return {
-        "id": tx.id,
-        "date": tx.date.isoformat(),
-        "tx_type": tx.tx_type,
-        "description": tx.description,
-        "amount": tx.amount,
-        "kind": tx.kind,
-        "main_category": tx.main_category,
-        "category_source": tx.category_source,
-        "attributes": [serialize_attribute(a) for a in top_level],
-    }
-
-
-# ---------- webes felület (statikus SPA build) ----------
-
-@app.route("/", defaults={"path": ""})
-@app.route("/<path:path>")
-def web(path):
-    if path.startswith("api/"):
+def _uuid_or_404(value: str) -> str:
+    try:
+        return str(uuid.UUID(value))
+    except (ValueError, AttributeError, TypeError):
         abort(404)
-    full = os.path.join(WEB_DIR, path)
-    if path and os.path.isfile(full):
-        return send_from_directory(WEB_DIR, path)
-    if not os.path.isfile(os.path.join(WEB_DIR, "index.html")):
-        return (
-            "A webes felület nincs lebuildelve. Futtasd: cd frontend && npm ci && npm run build",
-            503,
-            {"Content-Type": "text/plain; charset=utf-8"},
-        )
-    # Ismeretlen útvonal → index.html (kliens oldali nézetek)
-    return send_from_directory(WEB_DIR, "index.html")
+
+
+# ---------- hitelesítés minden /api kérésre ----------
+
+@app.before_request
+def authenticate():
+    if not request.path.startswith("/api/") or request.path.startswith(PUBLIC_API_PATHS):
+        return None
+    if auth.AUTH_MODE == "none":
+        if auth.ON_LAMBDA:  # AWS-en tilos belépés nélkül futni
+            return _error("A szerver nincs megfelelően beállítva.", 503)
+        g.user = auth.DEV_USER_EMAIL
+    elif auth.AUTH_MODE == "cognito":
+        email = auth.verify_session(request.cookies.get(auth.SESSION_COOKIE))
+        if not email:
+            return _error("Bejelentkezés szükséges.", 401)
+        g.user = email
+    else:
+        return _error("Ismeretlen AUTH_MODE.", 503)
+
+    # CSRF védelem: a módosító kéréseknek egyedi fejlécet kell küldeniük (egy
+    # idegen oldal ezt böngészőből nem tudja beállítani). A süti SameSite=Lax.
+    if request.method not in ("GET", "HEAD", "OPTIONS") and request.headers.get(auth.CSRF_HEADER) != auth.CSRF_VALUE:
+        return _error("Hiányzó vagy érvénytelen kérés-fejléc.", 403)
+    return None
+
+
+@app.errorhandler(404)
+def not_found(_e):
+    return _error("Nem található.", 404)
+
+
+@app.errorhandler(413)
+def too_large(_e):
+    return _error("A fájl túl nagy (legfeljebb 5 MB).", 413)
+
+
+@app.errorhandler(repo.NotFound)
+def repo_not_found(e):
+    return _error(str(e), 404)
+
+
+@app.errorhandler(repo.Invalid)
+def repo_invalid(e):
+    return _error(str(e), 400)
+
+
+# ---------- belépés / kilépés (Cognito + Google) ----------
+
+def _page(title: str, body: str, status: int = 200):
+    doc = f"""<!doctype html><html lang="hu"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,"><title>{html.escape(title)} — Pénzügyek</title>
+<style>
+  :root {{ color-scheme: light dark; --bg:#f8f9fb; --fg:#1c2024; --muted:#60646c; --card:#fff; --border:#e0e1e6; --accent:#0d74ce; }}
+  @media (prefers-color-scheme: dark) {{ :root {{ --bg:#111113; --fg:#edeef0; --muted:#b0b4ba; --card:#18191b; --border:#2e3135; --accent:#3b9eff; }} }}
+  body {{ margin:0; min-height:100vh; display:grid; place-items:center; background:var(--bg); color:var(--fg);
+         font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; padding:16px; box-sizing:border-box; }}
+  main {{ background:var(--card); border:1px solid var(--border); border-radius:12px; padding:32px; max-width:420px; width:100%; text-align:center; }}
+  h1 {{ font-size:20px; margin:0 0 8px; }} p {{ color:var(--muted); margin:0 0 24px; }}
+  a.btn {{ display:inline-block; background:var(--accent); color:#fff; text-decoration:none; padding:10px 18px; border-radius:8px; font-weight:600; }}
+  a.btn:focus-visible {{ outline:2px solid var(--accent); outline-offset:3px; }}
+</style></head><body><main>{body}</main></body></html>"""
+    resp = make_response(doc, status)
+    resp.headers["Content-Type"] = "text/html; charset=utf-8"
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+def _secure_cookies() -> bool:
+    return auth.AUTH_MODE == "cognito"
+
+
+@app.route("/api/auth/login", methods=["GET"])
+def auth_login():
+    if auth.AUTH_MODE != "cognito":
+        return redirect(auth.safe_next(request.args.get("next")))
+    cfg = auth.cognito_config()
+    state = secrets.token_urlsafe(24)
+    verifier, challenge = auth.pkce_pair()
+    resp = redirect(auth.authorize_url(cfg, state, challenge))
+    resp.set_cookie(
+        auth.STATE_COOKIE,
+        auth.make_state_cookie(state, verifier, auth.safe_next(request.args.get("next"))),
+        max_age=auth.STATE_TTL_S, path="/api/auth", secure=True, httponly=True, samesite="Lax",
+    )
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+def _denied_page(message: str):
+    cfg = auth.cognito_config()
+    body = (
+        "<h1>Nincs hozzáférésed</h1>"
+        f"<p>{html.escape(message)}</p>"
+        f'<a class="btn" href="{html.escape(auth.logout_url(cfg))}">Belépés másik fiókkal</a>'
+    )
+    resp = _page("Nincs hozzáférésed", body, 403)
+    resp.delete_cookie(auth.STATE_COOKIE, path="/api/auth", secure=True, httponly=True, samesite="Lax")
+    return resp
+
+
+@app.route("/api/auth/callback", methods=["GET"])
+def auth_callback():
+    if auth.AUTH_MODE != "cognito":
+        return redirect("/")
+    if request.args.get("error"):
+        # pl. a Cognito pre sign-up trigger elutasította a nem engedélyezett címet
+        return _denied_page("Ezzel a Google-fiókkal nem lehet belépni az alkalmazásba.")
+
+    state = auth.read_state_cookie(request.cookies.get(auth.STATE_COOKIE))
+    if not state or not secrets.compare_digest(state["s"], request.args.get("state", "")):
+        # lejárt / hiányzó állapot → új belépési kísérlet
+        return redirect("/api/auth/login")
+    code = request.args.get("code")
+    if not code:
+        return redirect("/api/auth/login")
+
+    cfg = auth.cognito_config()
+    try:
+        tokens = auth.exchange_code(cfg, code, state["v"])
+        email = auth.verified_email(auth.id_token_claims(cfg, tokens.get("id_token", "")))
+    except auth.AuthError as e:
+        app.logger.warning("Sikertelen belépés: %s", e)
+        return _page("Sikertelen belépés", '<h1>Sikertelen belépés</h1><p>Próbáld újra.</p><a class="btn" href="/">Újra</a>', 400)
+
+    if not email or not auth.is_allowed(email):
+        app.logger.warning("Nem engedélyezett felhasználó próbált belépni.")
+        return _denied_page("Ezzel a Google-fiókkal nem lehet belépni az alkalmazásba.")
+
+    resp = redirect(state.get("n") or "/")
+    resp.set_cookie(
+        auth.SESSION_COOKIE, auth.make_session(email),
+        max_age=auth.SESSION_TTL_S, path="/", secure=True, httponly=True, samesite="Lax",
+    )
+    resp.delete_cookie(auth.STATE_COOKIE, path="/api/auth", secure=True, httponly=True, samesite="Lax")
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@app.route("/api/auth/logout", methods=["GET"])
+def auth_logout():
+    if auth.AUTH_MODE != "cognito":
+        return redirect("/")
+    resp = redirect(auth.logout_url(auth.cognito_config()))
+    resp.delete_cookie(auth.SESSION_COOKIE, path="/", secure=True, httponly=True, samesite="Lax")
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@app.route("/api/auth/logged-out", methods=["GET"])
+def auth_logged_out():
+    return _page(
+        "Kijelentkeztél",
+        '<h1>Kijelentkeztél</h1><p>Sikeresen kijelentkeztél a Pénzügyek alkalmazásból.</p><a class="btn" href="/">Belépés</a>',
+    )
+
+
+@app.route("/api/me", methods=["GET"])
+def me():
+    return jsonify({"email": g.user, "auth": auth.AUTH_MODE})
+
+
+# ---------- állapot ----------
+
+@app.route("/api/health", methods=["GET"])
+def health():
+    return jsonify({"status": "ok"})
 
 
 # ---------- feltöltés ----------
@@ -93,213 +219,142 @@ def web(path):
 @app.route("/api/upload", methods=["POST"])
 def upload():
     if "file" not in request.files:
-        return jsonify({"error": "Nincs fájl csatolva."}), 400
+        return _error("Nincs fájl csatolva.", 400)
     file = request.files["file"]
     if not file.filename:
-        return jsonify({"error": "Üres fájlnév."}), 400
-
+        return _error("Üres fájlnév.", 400)
     ext = os.path.splitext(file.filename)[1].lower()
     if ext not in ALLOWED_EXT:
-        return jsonify({"error": "Csak .xls vagy .xlsx fájl tölthető fel."}), 400
-
-    filename = secure_filename(file.filename)
-    filepath = os.path.join(UPLOAD_DIR, f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{filename}")
-    file.save(filepath)
+        return _error("Csak .xls vagy .xlsx fájl tölthető fel.", 400)
 
     try:
-        records = parse_cib_statement(filepath)
+        records = parse_cib_statement(file.read())
     except Exception as e:
-        return jsonify({"error": f"Hiba a fájl feldolgozása közben: {e}"}), 400
+        return _error(f"Hiba a fájl feldolgozása közben: {e}", 400)
 
     # Nincs dátum/hónap szerinti szűrés: a fájl A11-től kezdődő teljes
     # tartalma betöltésre kerül. Az egyetlen kizáró tényező a duplikátum-
-    # ellenőrzés (tx_hash) — ami már korábban (akár törölve) bekerült az
-    # adatbázisba, az nem kerül be újra.
-    session = SessionLocal()
-    inserted, skipped = 0, 0
-    try:
-        for rec in records:
-            h = make_hash(rec)
-            # Szándékosan NINCS is_active szűrés: a hash-ellenőrzés a törölt
-            # (soft delete-elt) rekordokat is figyelembe veszi, így egy korábban
-            # törölt tétel újrafeltöltéskor sem kerül vissza duplikátumként.
-            if session.query(Transaction).filter_by(tx_hash=h).first():
-                skipped += 1
-                continue
+    # ellenőrzés (tx_hash) — ami már korábban (akár törölve) bekerült a
+    # felhasználó adatai közé, az nem kerül be újra. A fájlon belüli
+    # ismétlődéseket is kiszűrjük.
+    by_hash: dict[str, dict] = {}
+    for rec in records:
+        by_hash.setdefault(make_hash(rec, g.user), rec)
+    existing = repo.existing_hashes(g.user, list(by_hash))
 
-            tx = Transaction(
-                date=rec["date"],
-                tx_type=rec["tx_type"],
-                description=rec["description"],
-                amount=rec["amount"],
-                tx_hash=h,
-            )
+    new_items = []
+    for h, rec in by_hash.items():
+        if h in existing:
+            continue
+        item = {**rec, "tx_hash": h, "main_category": None, "category_source": "none", "sub_category": None}
+        if rec["amount"] < 0:
+            main_cat, sub_cat = auto_categorize(rec["description"])
+            if main_cat:
+                item.update(main_category=main_cat, category_source="auto", sub_category=sub_cat)
+        else:
+            # Bevétel rekordoknál automatikusan "bevétel" fő attribútum kerül
+            # beállításra; a felhasználó ezt utólag bármikor felülírhatja.
+            item.update(main_category="bevétel", category_source="auto")
+        new_items.append(item)
 
-            sub_cat = None
-            if rec["amount"] < 0:
-                main_cat, sub_cat = auto_categorize(rec["description"])
-                if main_cat:
-                    tx.main_category = main_cat
-                    tx.category_source = "auto"
-            else:
-                # Bevétel rekordoknál automatikusan "bevétel" fő attribútum kerül
-                # beállításra; a felhasználó ezt utólag bármikor felülírhatja.
-                tx.main_category = "bevétel"
-                tx.category_source = "auto"
-
-            session.add(tx)
-            session.flush()  # hogy legyen tx.id az al-attribútumhoz
-
-            if sub_cat:
-                session.add(Attribute(transaction_id=tx.id, parent_id=None, name=sub_cat))
-
-            inserted += 1
-        session.commit()
-    finally:
-        session.close()
-
-    return jsonify({"inserted": inserted, "skipped": skipped, "total_parsed": len(records)})
+    inserted = repo.insert_transactions(g.user, new_items)
+    return jsonify({"inserted": inserted, "skipped": len(records) - inserted, "total_parsed": len(records)})
 
 
 # ---------- listázás ----------
 
 @app.route("/api/transactions", methods=["GET"])
 def list_transactions():
-    session = SessionLocal()
-    try:
-        txs = (
-            session.query(Transaction)
-            .filter(Transaction.is_active.is_(True))
-            .order_by(Transaction.date.desc(), Transaction.id.desc())
-            .all()
-        )
-        return jsonify([serialize_transaction(t) for t in txs])
-    finally:
-        session.close()
+    return jsonify(repo.list_transactions(g.user))
 
 
 @app.route("/api/categories", methods=["GET"])
 def list_categories():
-    session = SessionLocal()
-    try:
-        rows = (
-            session.query(Transaction.main_category)
-            .filter(Transaction.is_active.is_(True), Transaction.main_category.isnot(None))
-            .distinct()
-            .all()
-        )
-        return jsonify(sorted({r[0] for r in rows if r[0]}))
-    finally:
-        session.close()
+    return jsonify(repo.list_categories(g.user))
 
 
 # ---------- fő attribútum szerkesztés (azonnali mentés) ----------
 
-@app.route("/api/transactions/<int:tx_id>", methods=["PATCH"])
+@app.route("/api/transactions/<tx_id>", methods=["PATCH"])
 def update_transaction(tx_id):
+    tx_id = _uuid_or_404(tx_id)
     data = request.get_json(force=True, silent=True) or {}
-    session = SessionLocal()
-    try:
-        tx = session.get(Transaction, tx_id)
-        if not tx:
-            return jsonify({"error": "A tranzakció nem található."}), 404
-        if "main_category" in data:
-            value = (data["main_category"] or "").strip()
-            tx.main_category = value or None
-            tx.category_source = "manual"
-        tx.updated_at = datetime.utcnow()
-        session.commit()
-        return jsonify(serialize_transaction(tx))
-    finally:
-        session.close()
+    if "main_category" not in data:
+        return _error("Nincs módosítandó mező.", 400)
+    value = (data.get("main_category") or "").strip() or None
+    tx = repo.set_main_category(g.user, tx_id, value)
+    if not tx:
+        return _error("A tranzakció nem található.", 404)
+    return jsonify(tx)
 
 
 # ---------- al-attribútum fa kezelése (azonnali mentés) ----------
 
-@app.route("/api/transactions/<int:tx_id>/attributes", methods=["POST"])
+@app.route("/api/transactions/<tx_id>/attributes", methods=["POST"])
 def add_attribute(tx_id):
+    tx_id = _uuid_or_404(tx_id)
     data = request.get_json(force=True, silent=True) or {}
     name = (data.get("name") or "").strip()
+    if not name:
+        return _error("Az attribútum neve nem lehet üres.", 400)
     parent_id = data.get("parent_id")
-    if not name:
-        return jsonify({"error": "Az attribútum neve nem lehet üres."}), 400
-
-    session = SessionLocal()
-    try:
-        tx = session.get(Transaction, tx_id)
-        if not tx:
-            return jsonify({"error": "A tranzakció nem található."}), 404
-        if parent_id:
-            parent = session.get(Attribute, parent_id)
-            if not parent or parent.transaction_id != tx_id:
-                return jsonify({"error": "Érvénytelen szülő attribútum."}), 400
-        attr = Attribute(transaction_id=tx_id, parent_id=parent_id, name=name)
-        session.add(attr)
-        session.commit()
-        return jsonify(serialize_attribute(attr))
-    finally:
-        session.close()
+    if parent_id:
+        try:
+            parent_id = str(uuid.UUID(str(parent_id)))
+        except ValueError:
+            return _error("Érvénytelen szülő attribútum.", 400)
+    return jsonify(repo.add_attribute(g.user, tx_id, name, parent_id or None))
 
 
-@app.route("/api/attributes/<int:attr_id>", methods=["PATCH"])
+@app.route("/api/attributes/<attr_id>", methods=["PATCH"])
 def rename_attribute(attr_id):
+    attr_id = _uuid_or_404(attr_id)
     data = request.get_json(force=True, silent=True) or {}
     name = (data.get("name") or "").strip()
     if not name:
-        return jsonify({"error": "Az attribútum neve nem lehet üres."}), 400
-
-    session = SessionLocal()
-    try:
-        attr = session.get(Attribute, attr_id)
-        if not attr:
-            return jsonify({"error": "Az attribútum nem található."}), 404
-        attr.name = name
-        session.commit()
-        return jsonify(serialize_attribute(attr))
-    finally:
-        session.close()
+        return _error("Az attribútum neve nem lehet üres.", 400)
+    return jsonify(repo.rename_attribute(g.user, attr_id, name))
 
 
-def _collect_ids(attr: Attribute) -> list[int]:
-    ids = [attr.id]
-    for c in attr.children:
-        ids.extend(_collect_ids(c))
-    return ids
-
-
-@app.route("/api/attributes/<int:attr_id>", methods=["DELETE"])
+@app.route("/api/attributes/<attr_id>", methods=["DELETE"])
 def delete_attribute(attr_id):
-    session = SessionLocal()
-    try:
-        attr = session.get(Attribute, attr_id)
-        if not attr:
-            return jsonify({"error": "Az attribútum nem található."}), 404
-        ids = _collect_ids(attr)
-        session.query(Attribute).filter(Attribute.id.in_(ids)).delete(synchronize_session=False)
-        session.commit()
-        return jsonify({"deleted": ids})
-    finally:
-        session.close()
+    attr_id = _uuid_or_404(attr_id)
+    return jsonify({"deleted": repo.delete_attribute(g.user, attr_id)})
 
 
 # ---------- tranzakció törlése ----------
 
-@app.route("/api/transactions/<int:tx_id>", methods=["DELETE"])
+@app.route("/api/transactions/<tx_id>", methods=["DELETE"])
 def delete_transaction(tx_id):
-    session = SessionLocal()
-    try:
-        tx = session.get(Transaction, tx_id)
-        if not tx:
-            return jsonify({"error": "A tranzakció nem található."}), 404
-        # Soft delete: a rekord megmarad az adatbázisban (inaktívként), hogy
-        # egy későbbi újrafeltöltés ne hozza vissza ugyanazt a tételt.
-        tx.is_active = False
-        tx.updated_at = datetime.utcnow()
-        session.commit()
-        return jsonify({"deleted": tx_id})
-    finally:
-        session.close()
+    tx_id = _uuid_or_404(tx_id)
+    # Soft delete: a rekord megmarad az adatbázisban (inaktívként), hogy
+    # egy későbbi újrafeltöltés ne hozza vissza ugyanazt a tételt.
+    if not repo.soft_delete_transaction(g.user, tx_id):
+        return _error("A tranzakció nem található.", 404)
+    return jsonify({"deleted": tx_id})
+
+
+# ---------- webes felület (csak helyi futtatásnál; AWS-en S3 szolgálja ki) ----------
+
+@app.route("/", defaults={"path": ""})
+@app.route("/<path:path>")
+def web(path):
+    if auth.ON_LAMBDA or path.startswith("api/"):
+        abort(404)
+    if path and os.path.isfile(os.path.join(WEB_DIR, path)):
+        return send_from_directory(WEB_DIR, path)
+    if not os.path.isfile(os.path.join(WEB_DIR, "index.html")):
+        return (
+            "A webes felület nincs lebuildelve. Futtasd: cd frontend && npm ci && npm run build",
+            503,
+            {"Content-Type": "text/plain; charset=utf-8"},
+        )
+    return send_from_directory(WEB_DIR, "index.html")
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    import db
+
+    db.migrate()
+    repo.adopt_legacy_rows(os.environ.get("LEGACY_DATA_OWNER", auth.DEV_USER_EMAIL).strip().lower(), make_hash)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "5000")), debug=False)

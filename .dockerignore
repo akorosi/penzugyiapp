@@ -1,6 +1,8 @@
 **/node_modules
 frontend/dist
-app/uploads/*
+build
+infra
+app/tests
 **/__pycache__
 **/*.pyc
 .git
