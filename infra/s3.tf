@@ -84,13 +84,14 @@ resource "aws_s3_object" "web" {
   cache_control = startswith(each.value, "assets/") ? "public, max-age=31536000, immutable" : "no-cache"
 }
 
-# Futásidejű konfiguráció: így a frontend tudja, hol az API (újrabuildelés nélkül).
+# Futásidejű konfiguráció. Az API ugyanazon a CloudFront címen, az /api/*
+# útvonalon érhető el, ezért az alap-URL üres (azonos origin).
 resource "aws_s3_object" "config" {
   bucket        = aws_s3_bucket.web.id
   key           = "config.json"
   content_type  = "application/json"
   cache_control = "no-cache"
   content = jsonencode({
-    apiBaseUrl = trimsuffix(aws_lambda_function_url.api.function_url, "/")
+    apiBaseUrl = ""
   })
 }

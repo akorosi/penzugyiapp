@@ -13,19 +13,20 @@ is futtatható.
 ## Architektúra (AWS)
 
 ```
- Böngésző ──HTTPS──▶ Amazon CloudFront ──OAC──▶ Amazon S3 (privát bucket)
-    │                                            (React + Radix UI felület, config.json)
-    └──HTTPS──▶ Lambda Function URL ──▶ AWS Lambda   (Python 3.13, arm64 — Flask REST API)
-                                           │  IAM auth token, TLS
-                                           ▼
-                                     Amazon Aurora DSQL   (szerver nélküli, PostgreSQL-kompatibilis)
+                                   ┌─ /*      ──OAC──▶ Amazon S3 (privát bucket)
+ Böngésző ──HTTPS──▶ CloudFront ───┤                   React + Radix UI felület, config.json
+                                   └─ /api/*  ──OAC──▶ Lambda Function URL (AWS_IAM)
+                                                         └▶ AWS Lambda (Python 3.13, arm64 — Flask REST API)
+                                                              │  IAM auth token, TLS
+                                                              ▼
+                                                         Amazon Aurora DSQL (szerver nélküli, PostgreSQL-kompatibilis)
 ```
 
 | Réteg | Szolgáltatás | Free Tier |
 |---|---|---|
 | Statikus tartalom | **Amazon S3** privát bucket (`frontend/dist` + `config.json`) | 5 GB, 20 000 GET / 2 000 PUT havonta¹ |
-| HTTPS kiszolgálás | **Amazon CloudFront** (alapértelmezett `*.cloudfront.net` tanúsítvány) | mindig ingyenes: 1 TB adatforgalom és 10 millió kérés havonta |
-| Dinamikus réteg | **AWS Lambda** + **Function URL** (nincs API Gateway) | mindig ingyenes: 1 millió kérés és 400 000 GB-mp havonta |
+| HTTPS belépési pont | **Amazon CloudFront** — felület és API egy címen (alapértelmezett `*.cloudfront.net` tanúsítvány) | mindig ingyenes: 1 TB adatforgalom és 10 millió kérés havonta |
+| Dinamikus réteg | **AWS Lambda** + **Function URL** (nem nyilvános, csak a CloudFront hívhatja; nincs API Gateway) | mindig ingyenes: 1 millió kérés és 400 000 GB-mp havonta |
 | Adatbázis | **Amazon Aurora DSQL** | mindig ingyenes: 100 000 DPU és 1 GB tárhely havonta |
 | Naplók | **CloudWatch Logs** (14 napos megőrzés) | mindig ingyenes: 5 GB havonta |
 | Jogosultság | **IAM** szerepkör és policy-k | díjmentes |
@@ -45,15 +46,20 @@ vagy API Gateway, így nincs óradíjas erőforrás.
   Controllal. A hash-elt assetek egy évig, az `index.html` és a
   `config.json` csak 1 másodpercig gyorsítótárazódik, így telepítés után
   nincs szükség cache-érvénytelenítésre.
-- Az API címét futásidőben, a bucketben
-  lévő `config.json`-ból olvassa — ezt a Terraform írja a Lambda Function
-  URL alapján, így a frontendet nem kell környezetenként újrabuildelni.
-- A Lambda a Flask alkalmazást futtatja egy beépített WSGI adapterrel
-  (`app/lambda_handler.py`). A Function URL CORS-beállítása csak a
-  CloudFront-os weboldal originjét engedi.
-- **Hitelesítés:** a Function URL nyilvános, ezért minden `/api` kérésnek a
-  Terraform által generált **hozzáférési kulcsot** kell küldenie
-  (`Authorization: Bearer …`). A felület belépéskor kéri.
+- Az API ugyanazon a CloudFront címen, az `/api/*` útvonalon érhető el
+  (gyorsítótár nélkül), így **nincs szükség CORS-ra**. A Lambda Function
+  URL `AWS_IAM` hitelesítésű, és csak ez a CloudFront disztribúció hívhatja
+  (Origin Access Control, SigV4 aláírás) — közvetlenül az internetről nem
+  érhető el. A Flask alkalmazás egy beépített WSGI adapterrel fut
+  (`app/lambda_handler.py`).
+- Az OAC miatt a törzzsel rendelkező kéréseknél (POST/PATCH/DELETE) a
+  böngésző kiszámolja a törzs SHA-256 hash-ét és az `x-amz-content-sha256`
+  fejlécben küldi (a fájlfeltöltés multipart törzsét ezért a frontend maga
+  állítja össze) — ezt a `frontend/src/lib/api.ts` kezeli.
+- **Hitelesítés:** minden `/api` kérésnek a Terraform által generált
+  **hozzáférési kulcsot** kell küldenie az `X-Access-Key` fejlécben (az
+  `Authorization` fejlécet a CloudFront aláírása foglalja). A felület
+  belépéskor kéri.
 - A Lambda a DSQL-hez a saját IAM szerepkörével, rövid életű auth tokennel
   és TLS-sel csatlakozik — nincs tárolt adatbázis-jelszó.
 - Az adatbázis-sémát a Terraform hozza létre / frissíti telepítéskor (a
@@ -247,12 +253,12 @@ kézzel az UI-n.
 - Fejlesztés hot reloaddal: indítsd a backendet (`docker compose up`),
   majd `cd frontend && npm install && npm run dev` →
   http://localhost:5173 (az `/api` hívásokat a :5000-re proxyzza).
-  A felhős API ellen is fejleszthetsz: `extra_cors_origins =
-  ["http://localhost:5173"]` a `terraform.tfvars`-ban, és
-  `VITE_API_BASE_URL=<api_url> npm run dev`.
-- Az API címe: `config.json` (futásidejű, AWS) → `VITE_API_BASE_URL`
-  (build-idejű) → azonos origin. A hozzáférési kulcsot a böngésző
-  `localStorage`-ban tárolja.
+  A felhős API ellen is fejleszthetsz (a Vite proxyzza a hívásokat, CORS
+  nem kell): `VITE_API_PROXY=$(terraform -chdir=../infra output -raw
+  website_url) npm run dev`.
+- Az API címe alapból az azonos origin (`/api`); felülírható a
+  futásidejű `config.json`-nal vagy a build-idejű `VITE_API_BASE_URL`-lel.
+  A hozzáférési kulcsot a böngésző `localStorage`-ban tárolja.
 - A **checkbox-alapú kijelölés** kizárólag kliens oldali állapot
   (`excludedIds` Set az `App.tsx`-ben) — szándékosan nincs hozzá
   backend mező/végpont.

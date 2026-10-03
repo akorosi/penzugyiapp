@@ -20,7 +20,7 @@ os.environ["ACCESS_KEY"] = "test-key"
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-AUTH = {"Authorization": "Bearer test-key"}
+AUTH = {"X-Access-Key": "test-key"}
 
 
 def pytest_collection_modifyitems(config, items):

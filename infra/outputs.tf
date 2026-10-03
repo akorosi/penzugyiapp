@@ -4,8 +4,8 @@ output "website_url" {
 }
 
 output "api_url" {
-  description = "A REST API címe (Lambda Function URL)."
-  value       = aws_lambda_function_url.api.function_url
+  description = "A REST API címe (CloudFront → Lambda, /api/*)."
+  value       = "${local.website_origin}/api"
 }
 
 output "access_key" {

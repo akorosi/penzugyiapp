@@ -39,12 +39,6 @@ variable "dsql_deletion_protection" {
   default     = true
 }
 
-variable "extra_cors_origins" {
-  description = "További engedélyezett originek az API-hoz (pl. [\"http://localhost:5173\"] a helyi Vite fejlesztéshez)."
-  type        = list(string)
-  default     = []
-}
-
 variable "frontend_dist_dir" {
   description = "A lebuildelt frontend könyvtára (npm run build kimenete)."
   type        = string

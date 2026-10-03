@@ -18,8 +18,10 @@ def upload(client, rows=SAMPLE_ROWS):
 
 def test_requires_access_key(client):
     assert client.get("/api/transactions").status_code == 401
-    assert client.get("/api/transactions", headers={"Authorization": "Bearer wrong"}).status_code == 401
+    assert client.get("/api/transactions", headers={"X-Access-Key": "wrong"}).status_code == 401
     assert client.get("/api/transactions", headers=AUTH).status_code == 200
+    # A CloudFront SigV4 aláírása (Authorization) nem helyettesíti a kulcsot
+    assert client.get("/api/transactions", headers={"Authorization": "Bearer test-key"}).status_code == 401
 
 
 def test_upload_categorizes_and_deduplicates(client):

@@ -2,10 +2,10 @@ import type { AttributeNode, Transaction, UploadResult } from "./types";
 
 // ---------- futásidejű konfiguráció ----------
 //
-// AWS-en a frontend S3-ról, az API egy Lambda Function URL-ről érkezik. Az API
-// címét a Terraform írja a bucketbe (config.json), így a frontendet nem kell
-// környezetenként újrabuildelni. Ha nincs config.json (helyi Flask / Vite dev),
-// a VITE_API_BASE_URL build-idejű változó, végül az azonos origin a tartalék.
+// AWS-en a felület és az API is ugyanazon a CloudFront címen érhető el (az
+// /api/* útvonalak a Lambdához mennek), így az alapértelmezés az azonos origin.
+// A config.json (Terraform írja) és a VITE_API_BASE_URL build-idejű változó
+// ezt felülírhatja.
 
 interface RuntimeConfig {
   apiBaseUrl?: string;
@@ -52,6 +52,34 @@ export function setAccessKey(key: string | null) {
   }
 }
 
+// ---------- kérés-aláírás segédletek ----------
+//
+// A CloudFront → Lambda Function URL kapcsolatot a CloudFront SigV4-gyel írja
+// alá (Origin Access Control). Ehhez a törzzsel rendelkező kérésekben a
+// böngészőnek meg kell adnia a törzs SHA-256 hash-ét az x-amz-content-sha256
+// fejlécben (a Lambda nem fogad aláíratlan törzset). Helyi futtatásnál a
+// fejléc ártalmatlan.
+
+async function sha256Hex(data: Uint8Array): Promise<string | null> {
+  // A WebCrypto csak biztonságos kontextusban (HTTPS / localhost) érhető el.
+  if (!globalThis.crypto?.subtle) return null;
+  const digest = await crypto.subtle.digest("SHA-256", data as BufferSource);
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** multipart/form-data törzs kézi összeállítása — a FormData határolóját a
+ *  böngésző csak küldéskor generálja, így annak hash-e előre nem számolható. */
+async function multipartFile(field: string, file: File): Promise<{ body: Uint8Array; contentType: string }> {
+  const boundary = "----penzugyek" + Array.from({ length: 24 }, () => Math.floor(Math.random() * 16).toString(16)).join("");
+  const safeName = file.name.replace(/["\r\n]/g, "_");
+  const head =
+    `--${boundary}\r\n` +
+    `Content-Disposition: form-data; name="${field}"; filename="${safeName}"\r\n` +
+    `Content-Type: ${file.type || "application/octet-stream"}\r\n\r\n`;
+  const blob = new Blob([head, file, `\r\n--${boundary}--\r\n`]);
+  return { body: new Uint8Array(await blob.arrayBuffer()), contentType: `multipart/form-data; boundary=${boundary}` };
+}
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -61,15 +89,27 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+interface RequestOptions {
+  method?: string;
+  body?: Uint8Array;
+  contentType?: string;
+}
+
+async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
   const base = await apiBase();
-  const headers = new Headers(init.headers);
+  const method = opts.method ?? "GET";
+  const headers = new Headers();
   const key = getAccessKey();
-  if (key) headers.set("Authorization", `Bearer ${key}`);
+  if (key) headers.set("X-Access-Key", key);
+  if (opts.contentType) headers.set("Content-Type", opts.contentType);
+  if (method !== "GET" && method !== "HEAD") {
+    const hash = await sha256Hex(opts.body ?? new Uint8Array());
+    if (hash) headers.set("x-amz-content-sha256", hash);
+  }
 
   let res: Response;
   try {
-    res = await fetch(`${base}${path}`, { ...init, headers });
+    res = await fetch(`${base}${path}`, { method, headers, body: opts.body as BodyInit | undefined });
   } catch {
     throw new ApiError("A szerver nem érhető el. Ellenőrizd a kapcsolatot.", 0);
   }
@@ -90,20 +130,19 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return body as T;
 }
 
-const json = (method: string, data: unknown): RequestInit => ({
+const json = (method: string, data: unknown): RequestOptions => ({
   method,
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify(data),
+  contentType: "application/json",
+  body: new TextEncoder().encode(JSON.stringify(data)),
 });
 
 export const api = {
   listTransactions: () => request<Transaction[]>("/api/transactions"),
   listCategories: () => request<string[]>("/api/categories"),
 
-  upload: (file: File) => {
-    const form = new FormData();
-    form.append("file", file);
-    return request<UploadResult>("/api/upload", { method: "POST", body: form });
+  upload: async (file: File) => {
+    const { body, contentType } = await multipartFile("file", file);
+    return request<UploadResult>("/api/upload", { method: "POST", body, contentType });
   },
 
   setMainCategory: (txId: string, mainCategory: string) =>

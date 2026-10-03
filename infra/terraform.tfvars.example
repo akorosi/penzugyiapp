@@ -2,8 +2,5 @@
 aws_region   = "eu-central-1"
 project_name = "penzugyek"
 
-# Helyi Vite fejlesztés a felhős API ellen:
-# extra_cors_origins = ["http://localhost:5173"]
-
 # terraform destroy előtt:
 # dsql_deletion_protection = false

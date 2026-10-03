@@ -21,8 +21,11 @@ ALLOWED_EXT = {".xls", ".xlsx"}
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # a Lambda Function URL kérésmérete max. 6 MB
 
 # Hozzáférési kulcs: ha be van állítva, minden /api kérésnek
-# "Authorization: Bearer <kulcs>" fejlécet kell küldenie. AWS-en kötelező
-# (Terraform generálja); helyi futtatásnál elhagyható.
+# "X-Access-Key: <kulcs>" fejlécet kell küldenie. AWS-en kötelező (Terraform
+# generálja); helyi futtatásnál elhagyható. Azért nem az Authorization
+# fejlécet használjuk, mert azt AWS-en a CloudFront (Origin Access Control)
+# a saját SigV4 aláírásával írja felül.
+ACCESS_KEY_HEADER = "X-Access-Key"
 ACCESS_KEY = os.environ.get("ACCESS_KEY", "")
 ON_LAMBDA = bool(os.environ.get("AWS_LAMBDA_FUNCTION_NAME"))
 
@@ -57,8 +60,7 @@ def require_access_key():
         if ON_LAMBDA:
             return _error("A szerver nincs megfelelően beállítva (hiányzó hozzáférési kulcs).", 503)
         return None
-    header = request.headers.get("Authorization", "")
-    token = header[7:] if header.lower().startswith("bearer ") else ""
+    token = request.headers.get(ACCESS_KEY_HEADER, "")
     if not token or not hmac.compare_digest(token.encode(), ACCESS_KEY.encode()):
         return _error("Érvénytelen vagy hiányzó hozzáférési kulcs.", 401)
     return None

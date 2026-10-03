@@ -1,16 +1,18 @@
 # ---------- Dinamikus réteg: AWS Lambda + Function URL ----------
 #
-# A Flask REST API egy Lambda függvényben fut, amit egy Function URL tesz
-# elérhetővé HTTPS-en (API Gateway nélkül — nincs külön díj).
+# A Flask REST API egy Lambda függvényben fut. A Function URL NEM nyilvános
+# (AWS_IAM hitelesítés): kizárólag a CloudFront hívhatja, SigV4-gyel aláírva
+# (Origin Access Control), az /api/* útvonalon. API Gateway nélkül — nincs
+# külön díj.
 # Free Tier (mindig ingyenes): havi 1 millió kérés és 400 000 GB-másodperc.
 
 locals {
-  function_name = "${var.project_name}-api"
-  # A CloudFront-on kiszolgált weboldal originje — csak innen engedjük a böngészős hívásokat.
+  function_name  = "${var.project_name}-api"
   website_origin = "https://${aws_cloudfront_distribution.web.domain_name}"
 }
 
-# Hozzáférési kulcs: a frontend "Authorization: Bearer <kulcs>" fejlécben küldi.
+# Hozzáférési kulcs: a frontend az "X-Access-Key" fejlécben küldi (az
+# Authorization fejlécet a CloudFront aláírása foglalja).
 resource "random_password" "access_key" {
   length  = 40
   special = false
@@ -98,31 +100,27 @@ resource "aws_lambda_function" "api" {
 
 resource "aws_lambda_function_url" "api" {
   function_name      = aws_lambda_function.api.function_name
-  authorization_type = "NONE" # a hitelesítést az alkalmazás végzi (hozzáférési kulcs)
-
-  cors {
-    allow_origins = concat([local.website_origin], var.extra_cors_origins)
-    allow_methods = ["GET", "POST", "PATCH", "DELETE"]
-    allow_headers = ["authorization", "content-type"]
-    max_age       = 86400
-  }
+  authorization_type = "AWS_IAM" # csak aláírt (CloudFront OAC) kérések
 }
 
-# Nyilvános Function URL-hez mindkét engedély szükséges: InvokeFunctionUrl és
-# (csak a Function URL-en keresztül) InvokeFunction.
-resource "aws_lambda_permission" "url_public" {
-  statement_id           = "FunctionURLAllowPublicAccess"
+# Csak ez a CloudFront disztribúció hívhatja a Function URL-t. Mindkét
+# engedély szükséges: InvokeFunctionUrl és (a Function URL-en keresztüli)
+# InvokeFunction.
+resource "aws_lambda_permission" "cloudfront_url" {
+  statement_id           = "AllowCloudFrontInvokeFunctionUrl"
   action                 = "lambda:InvokeFunctionUrl"
   function_name          = aws_lambda_function.api.function_name
-  principal              = "*"
-  function_url_auth_type = "NONE"
+  principal              = "cloudfront.amazonaws.com"
+  source_arn             = aws_cloudfront_distribution.web.arn
+  function_url_auth_type = "AWS_IAM"
 }
 
-resource "aws_lambda_permission" "url_invoke" {
-  statement_id             = "FunctionURLAllowInvokeAction"
+resource "aws_lambda_permission" "cloudfront_invoke" {
+  statement_id             = "AllowCloudFrontInvokeFunction"
   action                   = "lambda:InvokeFunction"
   function_name            = aws_lambda_function.api.function_name
-  principal                = "*"
+  principal                = "cloudfront.amazonaws.com"
+  source_arn               = aws_cloudfront_distribution.web.arn
   invoked_via_function_url = true
 }
 
