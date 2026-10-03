@@ -3,3 +3,6 @@ app/uploads/*
 __pycache__/
 *.pyc
 .DS_Store
+app/web/
+node_modules/
+app/data/

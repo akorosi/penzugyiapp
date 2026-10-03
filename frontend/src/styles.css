@@ -1,0 +1,426 @@
+/* Alkalmazás-szintű kiegészítések a Radix Themes tokenjeire építve.
+   Színek kizárólag Radix változókból (--gray-*, --accent-*, …), így a
+   világos és sötét mód automatikusan követi a témát. */
+
+html,
+body {
+  margin: 0;
+}
+
+body {
+  background: var(--color-background);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Csak a gyökér témára — a portálozott (popover, dialog) elemek is
+   .radix-themes osztályt kapnak. */
+#root > .radix-themes {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+.visually-hidden {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.skip-link {
+  position: absolute;
+  left: 12px;
+  top: -48px;
+  z-index: 100;
+  padding: 8px 12px;
+  border-radius: var(--radius-2);
+  background: var(--accent-9);
+  color: var(--accent-contrast);
+  font-size: var(--font-size-2);
+  text-decoration: none;
+  transition: top 0.15s ease;
+}
+.skip-link:focus {
+  top: 12px;
+}
+
+.field-label {
+  display: block;
+  margin-bottom: var(--space-1);
+}
+
+/* ---------- fejléc ---------- */
+
+.app-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: color-mix(in srgb, var(--color-background) 82%, transparent);
+  backdrop-filter: saturate(180%) blur(12px);
+  -webkit-backdrop-filter: saturate(180%) blur(12px);
+  border-bottom: 1px solid var(--gray-a4);
+}
+
+.brand-mark {
+  display: inline-grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-3);
+  background: var(--accent-9);
+  color: var(--accent-contrast);
+  box-shadow: var(--shadow-2);
+}
+
+@media (max-width: 520px) {
+  .hide-xs {
+    display: none;
+  }
+}
+
+@media (hover: none) {
+  .hide-on-touch {
+    display: none;
+  }
+}
+
+/* ---------- összesítő kártyák ---------- */
+
+.stat {
+  --stat-color: var(--gray-11);
+  --stat-bg: var(--gray-a3);
+}
+.stat[data-accent="green"] {
+  --stat-color: var(--green-11);
+  --stat-bg: var(--green-a3);
+}
+.stat[data-accent="red"] {
+  --stat-color: var(--red-11);
+  --stat-bg: var(--red-a3);
+}
+.stat[data-accent="blue"] {
+  --stat-color: var(--blue-11);
+  --stat-bg: var(--blue-a3);
+}
+.stat__icon {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-2);
+  background: var(--stat-bg);
+  color: var(--stat-color);
+}
+.stat__value {
+  margin: 0;
+  letter-spacing: -0.01em;
+  line-height: 1.15;
+}
+
+/* ---------- üres állapot ---------- */
+
+.empty-state__icon {
+  display: inline-grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 999px;
+  background: var(--accent-a3);
+  color: var(--accent-11);
+}
+
+/* ---------- feltöltés ---------- */
+
+.dropzone {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 168px;
+  padding: var(--space-5);
+  border: 2px dashed var(--gray-a6);
+  border-radius: var(--radius-4);
+  background: var(--gray-a2);
+  color: var(--gray-11);
+  text-align: center;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background-color 0.15s ease;
+}
+.dropzone:hover,
+.dropzone[data-dragging] {
+  border-color: var(--accent-8);
+  background: var(--accent-a2);
+  color: var(--accent-11);
+}
+.dropzone:has(input:focus-visible) {
+  outline: 2px solid var(--focus-8);
+  outline-offset: 2px;
+}
+.dropzone[data-has-file] {
+  border-style: solid;
+  border-color: var(--accent-7);
+  color: var(--gray-12);
+}
+.dropzone__link {
+  color: var(--accent-11);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.dropzone__filename {
+  word-break: break-all;
+}
+
+/* ---------- táblázat ---------- */
+
+.ledger {
+  --ledger-row-excluded-opacity: 0.5;
+}
+.ledger .rt-TableColumnHeaderCell {
+  white-space: nowrap;
+}
+.ledger .col-check {
+  width: 40px;
+}
+.ledger .col-date {
+  white-space: nowrap;
+}
+.ledger .col-desc {
+  min-width: 220px;
+  max-width: 380px;
+}
+.ledger .desc {
+  overflow-wrap: anywhere;
+}
+.ledger .col-amount {
+  white-space: nowrap;
+}
+.ledger .col-main {
+  min-width: 170px;
+  width: 190px;
+}
+.ledger .col-tags {
+  min-width: 200px;
+}
+.ledger .col-actions {
+  width: 44px;
+  text-align: center;
+}
+
+.ledger-row {
+  transition: background-color 0.1s ease;
+}
+.ledger-row:hover {
+  background: var(--gray-a2);
+}
+.ledger-row[data-excluded] > :not(.col-check):not(.col-actions) {
+  opacity: var(--ledger-row-excluded-opacity);
+}
+
+.sort-btn {
+  all: unset;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  border-radius: var(--radius-1);
+}
+.sort-btn:hover {
+  color: var(--accent-11);
+}
+.sort-btn:focus-visible {
+  outline: 2px solid var(--focus-8);
+  outline-offset: 2px;
+}
+
+.cat-source {
+  padding-left: 2px;
+}
+.save-ok {
+  color: var(--green-11);
+}
+.save-err {
+  color: var(--red-11);
+}
+
+.delete-preview {
+  border-radius: var(--radius-3);
+  background: var(--gray-a3);
+}
+
+/* ---------- al-attribútum fa ---------- */
+
+.tag-tree {
+  row-gap: 6px;
+}
+.tag-node,
+.tag-children {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.tag-sep {
+  color: var(--gray-9);
+  flex-shrink: 0;
+}
+.tag {
+  all: unset;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--accent-a3);
+  color: var(--accent-11);
+  font-size: var(--font-size-1);
+  font-weight: var(--font-weight-medium);
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 0.1s ease;
+}
+.tag:hover {
+  background: var(--accent-a4);
+}
+.tag[data-state="open"] {
+  background: var(--accent-a5);
+}
+.tag:focus-visible {
+  outline: 2px solid var(--focus-8);
+  outline-offset: 1px;
+}
+.tag-children .tag {
+  background: var(--gray-a3);
+  color: var(--gray-12);
+}
+.tag-children .tag:hover {
+  background: var(--gray-a4);
+}
+
+/* ---------- diagramok ---------- */
+
+.swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+.chart-tooltip {
+  min-width: 160px;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-3);
+  background: var(--color-panel-solid);
+  box-shadow: var(--shadow-4);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.donut-center {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.donut-legend {
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+}
+.empty-chart {
+  color: var(--gray-9);
+  text-align: center;
+}
+.recharts-wrapper:focus,
+.recharts-surface:focus {
+  outline: none;
+}
+
+/* ---------- értesítések ---------- */
+
+.toast-viewport {
+  position: fixed;
+  bottom: 0;
+  right: 0;
+  z-index: 2147483647;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: min(380px, 100vw);
+  max-width: 100vw;
+  margin: 0;
+  padding: var(--space-4);
+  list-style: none;
+  outline: none;
+  box-sizing: border-box;
+}
+.toast {
+  padding: var(--space-3);
+  border-radius: var(--radius-4);
+  background: var(--color-panel-solid);
+  box-shadow: var(--shadow-5);
+}
+.toast__icon {
+  margin-top: 1px;
+  flex-shrink: 0;
+  color: var(--blue-11);
+}
+.toast[data-tone="success"] .toast__icon {
+  color: var(--green-11);
+}
+.toast[data-tone="error"] .toast__icon {
+  color: var(--red-11);
+}
+.toast[data-state="open"] {
+  animation: toast-in 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.toast[data-state="closed"] {
+  animation: toast-out 0.15s ease-in forwards;
+}
+.toast[data-swipe="move"] {
+  transform: translateX(var(--radix-toast-swipe-move-x));
+}
+.toast[data-swipe="cancel"] {
+  transform: translateX(0);
+  transition: transform 0.2s ease-out;
+}
+.toast[data-swipe="end"] {
+  animation: toast-swipe-out 0.15s ease-out forwards;
+}
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+}
+@keyframes toast-out {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes toast-swipe-out {
+  from {
+    transform: translateX(var(--radix-toast-swipe-end-x));
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -1,7 +1,7 @@
 import os
 from datetime import datetime
 
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, send_from_directory, abort
 from werkzeug.utils import secure_filename
 
 from db import Base, engine, SessionLocal
@@ -25,8 +25,18 @@ def _ensure_schema():
 
 _ensure_schema()
 
-app = Flask(__name__)
-UPLOAD_DIR = "/app/uploads"
+# A webes felület a frontend/ könyvtárban lévő React (Radix UI) alkalmazás
+# statikus build kimenete (npm run build → frontend/dist). Docker-ben a
+# multi-stage build ide (/app/web) másolja; helyi futtatásnál a
+# frontend/dist könyvtárat használjuk.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+WEB_DIR = os.environ.get("WEB_DIR") or next(
+    (d for d in (os.path.join(_HERE, "web"), os.path.join(_HERE, "..", "frontend", "dist")) if os.path.isdir(d)),
+    os.path.join(_HERE, "web"),
+)
+
+app = Flask(__name__, static_folder=None)
+UPLOAD_DIR = os.environ.get("UPLOAD_DIR", "/app/uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 ALLOWED_EXT = {".xls", ".xlsx"}
 
@@ -58,11 +68,24 @@ def serialize_transaction(tx: Transaction) -> dict:
     }
 
 
-# ---------- oldal ----------
+# ---------- webes felület (statikus SPA build) ----------
 
-@app.route("/")
-def index():
-    return render_template("index.html")
+@app.route("/", defaults={"path": ""})
+@app.route("/<path:path>")
+def web(path):
+    if path.startswith("api/"):
+        abort(404)
+    full = os.path.join(WEB_DIR, path)
+    if path and os.path.isfile(full):
+        return send_from_directory(WEB_DIR, path)
+    if not os.path.isfile(os.path.join(WEB_DIR, "index.html")):
+        return (
+            "A webes felület nincs lebuildelve. Futtasd: cd frontend && npm ci && npm run build",
+            503,
+            {"Content-Type": "text/plain; charset=utf-8"},
+        )
+    # Ismeretlen útvonal → index.html (kliens oldali nézetek)
+    return send_from_directory(WEB_DIR, "index.html")
 
 
 # ---------- feltöltés ----------
