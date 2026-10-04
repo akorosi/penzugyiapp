@@ -97,6 +97,22 @@ vagy `AWS_PROFILE`), olyan régió, ahol az Aurora DSQL elérhető
 (alapértelmezés: `eu-central-1`, Frankfurt), és egy Google-fiók a Google
 Cloud Console-hoz.
 
+### Belépés (Cognito + Google): mi automatikus, mi kézi?
+
+| Ki / hol | Mit kell tenni | Milyen gyakran |
+|---|---|---|
+| **Terraform** (`make deploy`) | Mindent az AWS-ben: Cognito user pool, belépési domain, Google mint identity provider, app kliens (client secret-tel), *pre sign-up* Lambda az engedélyezett címekkel, a kliens adatai az SSM-ben, a callback/logout címek a CloudFront címére állítva | minden telepítéskor, magától |
+| **Te, AWS-ben** | Csak egy AWS fiók és helyi hitelesítő adatok (`aws configure` / `AWS_PROFILE`). Az AWS konzolban Cognitóhoz **semmit nem kell kattintani**. | egyszer |
+| **Te, Google Cloud Console-ban** | OAuth consent screen + *Web application* OAuth kliens a Cognito címeivel, Test users felvétele (lásd 2. lépés). A kapott Client ID/secret a `terraform.tfvars`-ba kerül. | egyszer (új felhasználónál: Test user felvétele) |
+| **Végfelhasználók** | **Semmit.** Megnyitják a weboldalt és belépnek a Google-fiókjukkal. Az első belépéskor a Google egy hozzájárulási képernyőt mutat (*Testing* állapotban „Google hasn't verified this app” figyelmeztetéssel is — *Continue*). AWS fiók, regisztráció, jelszó nem kell. | — |
+
+Mivel a Cognito címét a választott domain előtag határozza meg, a Google
+kliens a telepítés **előtt** beállítható; nincs „először telepíts, aztán
+állítsd be” sorrend. Új felhasználó felvétele: e-mail cím az
+`allowed_emails`-be + `make deploy`, és (*Testing* állapotban) Test userként
+a Google consent screenen. Aki nincs mindkét listán, azt a Google vagy a
+Cognito elutasítja.
+
 **1. Cognito domain előtag kiválasztása.** Régiónként globálisan egyedi
 legyen, pl. `penzugyek-hundjmada`. Ebből adódik a Cognito belépési címe:
 `https://penzugyek-hundjmada.auth.eu-central-1.amazoncognito.com`.
