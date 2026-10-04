@@ -1,4 +1,4 @@
-# Pénzügyek — build és telepítés
+# Pénzügyek — build és telepítés (Windows, macOS, Linux)
 #
 #   make build     frontend + Lambda csomag
 #   make deploy    build, majd terraform apply (AWS)
@@ -8,6 +8,13 @@
 TF ?= terraform
 INFRA := infra
 
+# Windowson a "python3" gyakran csak a Microsoft Store-ra mutató álparancs.
+ifeq ($(OS),Windows_NT)
+PYTHON ?= python
+else
+PYTHON ?= python3
+endif
+
 .PHONY: build frontend lambda init plan deploy destroy outputs test
 
 build: frontend lambda
@@ -16,7 +23,7 @@ frontend:
 	cd frontend && npm ci --no-audit --no-fund && npm run build
 
 lambda:
-	./scripts/build_lambda.sh
+	$(PYTHON) scripts/build_lambda.py
 
 init:
 	$(TF) -chdir=$(INFRA) init
@@ -26,9 +33,7 @@ plan: build init
 
 deploy: build init
 	$(TF) -chdir=$(INFRA) apply
-	@echo
-	@echo "Weboldal:           $$($(TF) -chdir=$(INFRA) output -raw website_url)"
-	@echo "Hozzáférési kulcs:  terraform -chdir=$(INFRA) output -raw access_key"
+	$(TF) -chdir=$(INFRA) output website_url
 
 destroy:
 	$(TF) -chdir=$(INFRA) destroy
@@ -37,4 +42,4 @@ outputs:
 	$(TF) -chdir=$(INFRA) output
 
 test:
-	cd app && python -m pytest -q tests
+	cd app && $(PYTHON) -m pytest -q tests
