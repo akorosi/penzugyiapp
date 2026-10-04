@@ -90,7 +90,7 @@ variable "frontend_dist_dir" {
 }
 
 variable "lambda_build_dir" {
-  description = "A Lambda csomag könyvtára (scripts/build_lambda.sh kimenete)."
+  description = "A Lambda csomag könyvtára (scripts/build_lambda.py kimenete)."
   type        = string
   default     = "../build/lambda"
 }

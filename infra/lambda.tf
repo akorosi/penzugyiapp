@@ -29,7 +29,7 @@ data "archive_file" "lambda" {
   lifecycle {
     precondition {
       condition     = fileexists("${var.lambda_build_dir}/lambda_handler.py")
-      error_message = "Nincs Lambda csomag. Futtasd előbb: make build (vagy scripts/build_lambda.sh)."
+      error_message = "Nincs Lambda csomag. Futtasd előbb: make build (vagy python scripts/build_lambda.py)."
     }
   }
 }

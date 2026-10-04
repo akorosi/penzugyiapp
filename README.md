@@ -123,8 +123,19 @@ cp infra/terraform.tfvars.example infra/terraform.tfvars
 make deploy
 ```
 
+**Windowson** a `make` opcionális (pl. `winget install ezwinports.make`). Nélküle
+PowerShellből ugyanez:
+
+```powershell
+$env:AWS_PROFILE = "penzugyek"
+cd frontend; npm ci; npm run build; cd ..
+python scripts\build_lambda.py
+terraform -chdir=infra init
+terraform -chdir=infra apply
+```
+
 A `make deploy` lépései: frontend build (`npm ci && npm run build`), Lambda
-csomag (`scripts/build_lambda.sh` — a függőségeket a Lambda arm64
+csomag (`python scripts/build_lambda.py` — a függőségeket a Lambda arm64
 környezetére tölti le, Docker nélkül), majd `terraform init` és
 `terraform apply`. A végén kiírja a weboldal címét
 (`https://….cloudfront.net`; az első telepítésnél a CloudFront
@@ -296,7 +307,7 @@ kézzel az UI-n.
 | `app/` | Python backend: `main.py` (Flask REST API), `auth.py` (Cognito belépés, munkamenet-süti), `lambda_handler.py` (Lambda belépési pont + WSGI adapter), `db.py` (kapcsolat + séma), `repository.py` (SQL, felhasználónként szűkítve), `excel_parser.py`, `categorize.py`, `import_sqlite.py` |
 | `infra/` | Terraform: `s3.tf`, `cloudfront.tf`, `cognito.tf`, `lambda.tf`, `dsql.tf`, `variables.tf`, `outputs.tf` |
 | `infra/functions/` | `auth_gate.js` (CloudFront Function: belépés-kapu), `pre_signup.py` (Cognito trigger: engedélyezett címek) |
-| `scripts/build_lambda.sh` | Lambda csomag összeállítása (`build/lambda/`) |
+| `scripts/build_lambda.py` | Lambda csomag összeállítása (`build/lambda/`) |
 | `Makefile` | `build`, `deploy`, `destroy`, `test` |
 
 ### Frontend (`frontend/`)
