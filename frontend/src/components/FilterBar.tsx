@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { Box, Button, Flex, IconButton, Kbd, SegmentedControl, Select, Text, TextField } from "@radix-ui/themes";
 import { Cross2Icon, MagnifyingGlassIcon, ResetIcon } from "@radix-ui/react-icons";
-import type { Filters, KindFilter } from "../lib/types";
+import { NO_MAIN_CATEGORY, type Filters, type KindFilter } from "../lib/types";
 import { hasActiveFilters } from "../lib/ledger";
 
 interface Props {
@@ -97,6 +97,7 @@ export function FilterBar({ filters, onChange, categories }: Props) {
             <Select.Trigger aria-labelledby="flt-cat-label" style={{ width: "100%" }} />
             <Select.Content position="popper">
               <Select.Item value={ALL}>Összes</Select.Item>
+              <Select.Item value={NO_MAIN_CATEGORY}>Fő attribútum nélkül</Select.Item>
               {categories.length > 0 && <Select.Separator />}
               {categories.map((c) => (
                 <Select.Item key={c} value={c}>

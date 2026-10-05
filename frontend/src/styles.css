@@ -424,3 +424,51 @@ body {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ---------- havi költés: attribútum × hónap táblázat ---------- */
+
+.chart-tooltip__total {
+  border-top: 1px solid var(--gray-a5);
+  margin-top: 2px;
+}
+.pivot-scroll {
+  overflow-x: auto;
+  max-width: 100%;
+}
+.pivot-table {
+  white-space: nowrap;
+}
+.pivot-table .pivot-sticky {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--color-panel-solid);
+}
+.pivot-row {
+  cursor: pointer;
+}
+.pivot-row:hover > *,
+.pivot-row:focus-visible > * {
+  background: var(--gray-a3);
+}
+.pivot-row:hover > .pivot-sticky,
+.pivot-row:focus-visible > .pivot-sticky {
+  background: linear-gradient(var(--gray-a3), var(--gray-a3)), var(--color-panel-solid);
+}
+.pivot-row:focus-visible {
+  outline: 2px solid var(--focus-8);
+  outline-offset: -2px;
+}
+.pivot-row[data-selected] > * {
+  background: var(--accent-a3);
+}
+.pivot-row[data-selected] > .pivot-sticky {
+  background: linear-gradient(var(--accent-a3), var(--accent-a3)), var(--color-panel-solid);
+}
+.pivot-table [data-zero] {
+  color: var(--gray-9);
+}
+.pivot-total > * {
+  font-weight: 600;
+  border-top: 1px solid var(--gray-a6);
+}

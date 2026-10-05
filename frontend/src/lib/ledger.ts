@@ -1,15 +1,17 @@
-import type { AttributeNode, Filters, Transaction } from "./types";
+import { NO_MAIN_CATEGORY, type AttributeNode, type Filters, type Transaction } from "./types";
 
 function attributeTreeMatches(nodes: AttributeNode[], q: string): boolean {
   return nodes.some((n) => n.name.toLowerCase().includes(q) || attributeTreeMatches(n.children, q));
 }
 
-/** Szűrés: dátum, fő attribútum, típus, valamint szabad szöveges keresés a
+/** Szűrés: dátum, fő attribútum (vagy annak hiánya), típus, valamint szabad szöveges keresés a
  *  közleményben, a tranzakció típusában és az al-attribútum fában (tetszőleges mélységig). */
 export function applyFilters(txs: Transaction[], f: Filters): Transaction[] {
   const q = f.search.trim().toLowerCase();
   return txs.filter((t) => {
-    if (f.mainCategory && (t.main_category ?? "") !== f.mainCategory) return false;
+    if (f.mainCategory === NO_MAIN_CATEGORY) {
+      if (t.main_category?.trim()) return false;
+    } else if (f.mainCategory && (t.main_category ?? "") !== f.mainCategory) return false;
     if (f.kind === "income" && t.kind !== "bevétel") return false;
     if (f.kind === "expense" && t.kind !== "kiadás") return false;
     if (f.kind === "savings" && t.kind !== "megtakarítás") return false;
@@ -83,4 +85,59 @@ export function monthlyFlow(txs: Transaction[]) {
     months.set(m, row);
   }
   return [...months.values()].sort((a, b) => a.month.localeCompare(b.month));
+}
+
+/** "2024-11" → "2024-12" */
+function nextMonth(ym: string) {
+  const [y, m] = ym.split("-").map(Number);
+  return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`;
+}
+
+export interface MonthlySpending {
+  /** Időrendben, hézag nélkül az első és az utolsó kiadásos hónap között. */
+  months: string[];
+  /** Hónaponkénti teljes kiadás (pozitív), a `months` sorrendjében. */
+  totals: number[];
+  /** Fő attribútumonként a havi kiadások (pozitív), összköltés szerint csökkenő sorrendben. */
+  byCategory: { category: string; total: number; perMonth: number[] }[];
+}
+
+/** Havi kiadások összesen és fő attribútumonként. A kiadás nélküli
+ *  közbenső hónapok 0-val szerepelnek, hogy a trend ne torzuljon. */
+export function monthlySpending(txs: Transaction[]): MonthlySpending {
+  const cells = new Map<string, Map<string, number>>(); // kategória → hónap → összeg
+  let first = "";
+  let last = "";
+  for (const t of txs) {
+    if (t.kind !== "kiadás") continue;
+    const m = t.date.slice(0, 7);
+    if (!first || m < first) first = m;
+    if (!last || m > last) last = m;
+    const key = t.main_category?.trim() || UNCATEGORIZED;
+    const row = cells.get(key) ?? new Map<string, number>();
+    row.set(m, (row.get(m) ?? 0) - t.amount);
+    cells.set(key, row);
+  }
+  const months: string[] = [];
+  if (first) for (let m = first; m <= last; m = nextMonth(m)) months.push(m);
+
+  const byCategory = [...cells.entries()]
+    .map(([category, row]) => {
+      const perMonth = months.map((m) => row.get(m) ?? 0);
+      return { category, total: perMonth.reduce((s, v) => s + v, 0), perMonth };
+    })
+    .sort((a, b) => b.total - a.total);
+  const totals = months.map((_, i) => byCategory.reduce((s, c) => s + c.perMonth[i], 0));
+  return { months, totals, byCategory };
+}
+
+/** Gördülő (mozgó) átlag: az i. elem az utolsó `window` érték átlaga.
+ *  Amíg nincs meg a teljes ablak, `null` (a diagram ott nem rajzol vonalat). */
+export function movingAverage(values: number[], window: number): (number | null)[] {
+  let sum = 0;
+  return values.map((v, i) => {
+    sum += v;
+    if (i >= window) sum -= values[i - window];
+    return i >= window - 1 ? sum / window : null;
+  });
 }
