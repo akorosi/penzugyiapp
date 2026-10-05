@@ -12,18 +12,25 @@ export function ChartTooltip({
   label,
   labelFormatter,
   stacked,
+  unstackedKeys,
 }: {
   active?: boolean;
-  payload?: { name?: string; value?: number; color?: string; payload?: { fill?: string } }[];
+  payload?: { name?: string; value?: number | null; color?: string; dataKey?: unknown; payload?: { fill?: string } }[];
   label?: string | number;
   labelFormatter?: (l: string) => string;
   /** Halmozott diagram: a nulla sorok elmaradnak, a többi csökkenő sorrendben, alul összesen. */
   stacked?: boolean;
+  /** Halmozott diagramon a nem halmozott sorozatok (pl. mozgóátlag): az összesen alatt, abba nem számítva. */
+  unstackedKeys?: string[];
 }) {
   if (!active || !payload?.length) return null;
+  const isExtra = (p: { dataKey?: unknown }) => !!stacked && !!unstackedKeys?.includes(String(p.dataKey));
+  // A még nem értelmezett (null) mozgóátlag-pontok nem kerülnek a tooltipbe.
+  const shown = payload.filter((p) => p.value != null);
   const rows = stacked
-    ? payload.filter((p) => (p.value ?? 0) !== 0).sort((a, b) => (b.value ?? 0) - (a.value ?? 0))
-    : payload;
+    ? shown.filter((p) => !isExtra(p) && p.value !== 0).sort((a, b) => (b.value ?? 0) - (a.value ?? 0))
+    : shown;
+  const extras = shown.filter(isExtra);
   const title = label != null && label !== "" ? (labelFormatter ? labelFormatter(String(label)) : String(label)) : null;
   return (
     <div className="chart-tooltip">
@@ -53,6 +60,17 @@ export function ChartTooltip({
           </Text>
         </Flex>
       )}
+      {extras.map((p, i) => (
+        <Flex key={`x${i}`} align="center" gap="2">
+          <span className="swatch" style={{ background: p.color }} aria-hidden />
+          <Text size="1" color="gray">
+            {p.name}
+          </Text>
+          <Text size="1" weight="medium" className="tabular" ml="auto">
+            {formatHuf(p.value ?? 0)}
+          </Text>
+        </Flex>
+      ))}
     </div>
   );
 }

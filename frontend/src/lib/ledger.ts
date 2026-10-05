@@ -130,3 +130,14 @@ export function monthlySpending(txs: Transaction[]): MonthlySpending {
   const totals = months.map((_, i) => byCategory.reduce((s, c) => s + c.perMonth[i], 0));
   return { months, totals, byCategory };
 }
+
+/** Gördülő (mozgó) átlag: az i. elem az utolsó `window` érték átlaga.
+ *  Amíg nincs meg a teljes ablak, `null` (a diagram ott nem rajzol vonalat). */
+export function movingAverage(values: number[], window: number): (number | null)[] {
+  let sum = 0;
+  return values.map((v, i) => {
+    sum += v;
+    if (i >= window) sum -= values[i - window];
+    return i >= window - 1 ? sum / window : null;
+  });
+}

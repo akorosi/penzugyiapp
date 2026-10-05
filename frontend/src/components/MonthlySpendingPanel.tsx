@@ -1,8 +1,7 @@
 import { useMemo, useState, type ReactNode } from "react";
-import { Badge, Box, Card, Flex, Grid, Select, Table, Text } from "@radix-ui/themes";
+import { Badge, Box, Card, Flex, Grid, SegmentedControl, Select, Table, Text } from "@radix-ui/themes";
 import {
   Bar,
-  BarChart,
   CartesianGrid,
   ComposedChart,
   Legend,
@@ -14,7 +13,7 @@ import {
   YAxis,
 } from "recharts";
 import type { Transaction } from "../lib/types";
-import { monthlySpending } from "../lib/ledger";
+import { monthlySpending, movingAverage } from "../lib/ledger";
 import { formatCompact, formatHuf, formatMonth, formatNumber, formatPercent } from "../lib/format";
 import { CATEGORICAL, OTHER_COLOR, OTHER_LABEL } from "../lib/palette";
 import { AXIS_TICK, ChartCard, ChartTooltip, EmptyChart, GRID_STROKE } from "./chartParts";
@@ -26,8 +25,11 @@ interface Props {
 }
 
 const ALL = "__all__";
-/** Gördülő átlag ablaka (hónap). */
-const TREND_WINDOW = 3;
+/** Választható mozgóátlag-ablakok (hónap); 0 = kikapcsolva. */
+const MA_WINDOWS = [0, 3, 6, 12] as const;
+type MaWindow = (typeof MA_WINDOWS)[number];
+const maLabel = (w: number) => `${w} havi mozgóátlag`;
+const MA_STROKE = "var(--gray-12)";
 
 const legendFormatter = (value: string) => <span style={{ color: "var(--gray-11)" }}>{value}</span>;
 const LEGEND_STYLE = { fontSize: 12, color: "var(--gray-11)", paddingBottom: 8 };
@@ -57,6 +59,7 @@ export function MonthlySpendingPanel({ included, colorIndex, appearance }: Props
   const otherColor = OTHER_COLOR[appearance];
   const data = useMemo(() => monthlySpending(included), [included]);
   const [picked, setPicked] = useState<string>(ALL);
+  const [maWindow, setMaWindow] = useState<MaWindow>(3);
 
   // Ha a szűrés miatt eltűnik a kiválasztott attribútum, visszaállunk az összesre.
   const focus = data.byCategory.find((c) => c.category === picked) ?? null;
@@ -67,19 +70,10 @@ export function MonthlySpendingPanel({ included, colorIndex, appearance }: Props
   const grandTotal = data.totals.reduce((s, v) => s + v, 0);
   const average = n ? grandTotal / n : 0;
 
+  const totalMa = useMemo(() => (maWindow ? movingAverage(data.totals, maWindow) : []), [data, maWindow]);
   const trendRows = useMemo(
-    () =>
-      data.months.map((month, i) => {
-        const from = Math.max(0, i - TREND_WINDOW + 1);
-        const window = data.totals.slice(from, i + 1);
-        return {
-          month,
-          total: data.totals[i],
-          // Az első hónapokban még nincs teljes ablak — ott nem rajzolunk vonalat.
-          trend: i >= TREND_WINDOW - 1 ? window.reduce((s, v) => s + v, 0) / window.length : null,
-        };
-      }),
-    [data],
+    () => data.months.map((month, i) => ({ month, total: data.totals[i], ma: totalMa[i] ?? null })),
+    [data, totalMa],
   );
 
   // Halmozott oszlopok: a saját színnel rendelkező attribútumok külön sávként, a többi "Egyéb"-ben.
@@ -102,17 +96,30 @@ export function MonthlySpendingPanel({ included, colorIndex, appearance }: Props
       });
     }
     const rows = data.months.map((month, i) => {
-      const row: Record<string, string | number> = { month };
+      const row: Record<string, string | number | null> = { month, ma: totalMa[i] ?? null };
       for (const s of series) row[s.key] = s.perMonth[i];
       return row;
     });
     return { series, rows };
-  }, [data, colorIndex, palette, otherColor]);
+  }, [data, colorIndex, palette, otherColor, totalMa]);
 
-  const focusRows = useMemo(
-    () => (focus ? data.months.map((month, i) => ({ month, amount: focus.perMonth[i] })) : []),
-    [data, focus],
-  );
+  const focusRows = useMemo(() => {
+    if (!focus) return [];
+    const ma = maWindow ? movingAverage(focus.perMonth, maWindow) : [];
+    return data.months.map((month, i) => ({ month, amount: focus.perMonth[i], ma: ma[i] ?? null }));
+  }, [data, focus, maWindow]);
+
+  const maLine = maWindow ? (
+    <Line
+      dataKey="ma"
+      name={maLabel(maWindow)}
+      stroke={MA_STROKE}
+      strokeWidth={2}
+      dot={false}
+      connectNulls={false}
+      isAnimationActive={false}
+    />
+  ) : null;
 
   if (n === 0) {
     return (
@@ -154,9 +161,36 @@ export function MonthlySpendingPanel({ included, colorIndex, appearance }: Props
         </section>
       </Grid>
 
+      <Flex align="center" gap="3" wrap="wrap">
+        <Text size="2" weight="medium" color="gray" id="ms-ma-label">
+          Mozgóátlag
+        </Text>
+        <SegmentedControl.Root
+          value={String(maWindow)}
+          onValueChange={(v) => setMaWindow(Number(v) as MaWindow)}
+          aria-labelledby="ms-ma-label"
+          size="1"
+        >
+          {MA_WINDOWS.map((w) => (
+            <SegmentedControl.Item key={w} value={String(w)}>
+              {w ? `${w} hó` : "Ki"}
+            </SegmentedControl.Item>
+          ))}
+        </SegmentedControl.Root>
+        {maWindow > 0 && (
+          <Text size="1" color="gray">
+            Minden hónapnál az utolsó {maWindow} hónap átlaga, így kisimul a havi ingadozás.
+          </Text>
+        )}
+      </Flex>
+
       <ChartCard
         title="Teljes költés havonta"
-        description={`Az oszlopok a havi kiadást, a vonal a ${TREND_WINDOW} havi gördülő átlagot, a szaggatott vonal a teljes időszak átlagát mutatja.`}
+        description={
+          maWindow
+            ? `Az oszlopok a havi kiadást, a vonal a ${maLabel(maWindow)}ot, a szaggatott vonal a teljes időszak átlagát mutatja.`
+            : "Az oszlopok a havi kiadást, a szaggatott vonal a teljes időszak átlagát mutatja."
+        }
       >
         <Box style={{ height: 300 }}>
           <ResponsiveContainer width="100%" height="100%">
@@ -167,15 +201,7 @@ export function MonthlySpendingPanel({ included, colorIndex, appearance }: Props
               <Tooltip content={<ChartTooltip labelFormatter={formatMonth} />} cursor={{ fill: "var(--gray-a3)" }} />
               <Legend verticalAlign="top" align="right" iconType="circle" iconSize={8} formatter={legendFormatter} wrapperStyle={LEGEND_STYLE} />
               <Bar dataKey="total" name="Kiadás" fill={palette[1]} radius={[4, 4, 0, 0]} maxBarSize={36} />
-              <Line
-                dataKey="trend"
-                name={`${TREND_WINDOW} havi átlag`}
-                stroke="var(--gray-12)"
-                strokeWidth={2}
-                dot={false}
-                connectNulls={false}
-                isAnimationActive={false}
-              />
+              {maLine}
               <ReferenceLine y={average} stroke="var(--gray-9)" strokeDasharray="4 4" ifOverflow="extendDomain" />
             </ComposedChart>
           </ResponsiveContainer>
@@ -186,8 +212,8 @@ export function MonthlySpendingPanel({ included, colorIndex, appearance }: Props
         title="Költés fő attribútumonként, havonta"
         description={
           focus
-            ? `${focus.category}: havi átlag ${formatHuf(focus.total / n)}, összesen ${formatHuf(focus.total)}.`
-            : "Válassz egy attribútumot a havi alakulásához, vagy kattints egy sorra az alábbi táblázatban."
+            ? `${focus.category}: havi átlag ${formatHuf(focus.total / n)}, összesen ${formatHuf(focus.total)}.${maWindow ? ` A vonal a ${maLabel(maWindow)}.` : ""}`
+            : `${maWindow ? `A vonal a teljes költés ${maLabel(maWindow)}a. ` : ""}Válassz egy attribútumot a havi alakulásához, vagy kattints egy sorra az alábbi táblázatban.`
         }
         action={
           <Box minWidth="200px">
@@ -212,20 +238,22 @@ export function MonthlySpendingPanel({ included, colorIndex, appearance }: Props
         <Box style={{ height: 320 }}>
           <ResponsiveContainer width="100%" height="100%">
             {focus ? (
-              <BarChart data={focusRows} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+              <ComposedChart data={focusRows} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
                 <CartesianGrid vertical={false} stroke={GRID_STROKE} />
                 <XAxis dataKey="month" tickFormatter={formatMonth} tick={AXIS_TICK} axisLine={false} tickLine={false} />
                 <YAxis tickFormatter={formatCompact} tick={AXIS_TICK} axisLine={false} tickLine={false} width={56} />
                 <Tooltip content={<ChartTooltip labelFormatter={formatMonth} />} cursor={{ fill: "var(--gray-a3)" }} />
+                <Legend verticalAlign="top" align="right" iconType="circle" iconSize={8} formatter={legendFormatter} wrapperStyle={LEGEND_STYLE} />
                 <Bar dataKey="amount" name={focus.category} fill={colorOf(focus.category)} radius={[4, 4, 0, 0]} maxBarSize={36} />
+                {maLine}
                 <ReferenceLine y={focus.total / n} stroke="var(--gray-9)" strokeDasharray="4 4" ifOverflow="extendDomain" />
-              </BarChart>
+              </ComposedChart>
             ) : (
-              <BarChart data={stack.rows} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+              <ComposedChart data={stack.rows} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
                 <CartesianGrid vertical={false} stroke={GRID_STROKE} />
                 <XAxis dataKey="month" tickFormatter={formatMonth} tick={AXIS_TICK} axisLine={false} tickLine={false} />
                 <YAxis tickFormatter={formatCompact} tick={AXIS_TICK} axisLine={false} tickLine={false} width={56} />
-                <Tooltip content={<ChartTooltip labelFormatter={formatMonth} stacked />} cursor={{ fill: "var(--gray-a3)" }} />
+                <Tooltip content={<ChartTooltip labelFormatter={formatMonth} stacked unstackedKeys={["ma"]} />} cursor={{ fill: "var(--gray-a3)" }} />
                 <Legend verticalAlign="top" align="right" iconType="circle" iconSize={8} formatter={legendFormatter} wrapperStyle={LEGEND_STYLE} />
                 {stack.series.map((s) => (
                   <Bar
@@ -239,7 +267,8 @@ export function MonthlySpendingPanel({ included, colorIndex, appearance }: Props
                     maxBarSize={36}
                   />
                 ))}
-              </BarChart>
+                {maLine}
+              </ComposedChart>
             )}
           </ResponsiveContainer>
         </Box>
