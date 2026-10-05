@@ -1,5 +1,5 @@
 export type Kind = "bevétel" | "kiadás" | "megtakarítás";
-export type CategorySource = "auto" | "manual" | "none";
+export type CategorySource = "auto" | "rule" | "manual" | "none";
 
 export interface AttributeNode {
   id: string; // UUID
@@ -18,6 +18,14 @@ export interface Transaction {
   main_category: string | null;
   category_source: CategorySource;
   attributes: AttributeNode[];
+}
+
+/** Saját kategorizálási szabály: ha a közlemény tartalmazza a mintát, a kiadás ezt a fő attribútumot kapja. */
+export interface CategoryRule {
+  id: string; // UUID
+  pattern: string;
+  main_category: string;
+  created_at: string;
 }
 
 export interface UploadResult {
@@ -48,3 +56,6 @@ export const EMPTY_FILTERS: Filters = {
 export const NO_MAIN_CATEGORY = "__none__";
 
 export const SAVINGS_LABEL = "megtakarítás";
+
+/** Egy saját szabály mintájának minimális hossza (a szerver is ellenőrzi). */
+export const MIN_RULE_PATTERN = 3;

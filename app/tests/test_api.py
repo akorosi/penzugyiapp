@@ -183,3 +183,84 @@ def test_legacy_rows_are_adopted(app_client):
     # az újraszámolt azonosító miatt ugyanaz a tétel nem importálódik újra
     r = upload(app_client, [(date(2025, 1, 2), "T", "SPAR", -100)])
     assert r.json["inserted"] == 0
+
+
+COCA = "5473 **** **** 2388A20260930 083633 650.00 HUF 5499 660741HU Budapest NYX CocaColaHBCMag NX286830 8909142"
+
+
+def test_bulk_main_category(client):
+    from datetime import date
+
+    upload(client)
+    txs = client.get("/api/transactions").json
+    ids = [t["id"] for t in txs[:2]]
+    r = client.post("/api/transactions/bulk-main-category", json={"ids": ids, "main_category": " étel "}, headers=HDR)
+    assert r.status_code == 200 and r.json == {"updated": 2}
+    after = {t["id"]: t for t in client.get("/api/transactions").json}
+    assert all(after[i]["main_category"] == "étel" and after[i]["category_source"] == "manual" for i in ids)
+
+    # Üres érték törli a fő attribútumot
+    client.post("/api/transactions/bulk-main-category", json={"ids": ids[:1], "main_category": ""}, headers=HDR)
+    assert next(t for t in client.get("/api/transactions").json if t["id"] == ids[0])["main_category"] is None
+
+    assert client.post("/api/transactions/bulk-main-category", json={"ids": []}, headers=HDR).status_code == 400
+    assert client.post("/api/transactions/bulk-main-category", json={"ids": ["x"]}, headers=HDR).status_code == 400
+
+    # Más felhasználó tételeit nem módosíthatja
+    login(client, USER_B)
+    upload(client, [(date(2026, 9, 1), "T", "B tétele", -1)])
+    r = client.post("/api/transactions/bulk-main-category", json={"ids": ids, "main_category": "x"}, headers=HDR)
+    assert r.json == {"updated": 0}
+
+
+def test_rules_apply_to_existing_and_future_imports(client):
+    from datetime import date
+
+    rows = [
+        (date(2026, 9, 30), "Kártyás vásárlás", COCA, -650),
+        (date(2026, 9, 29), "Kártyás vásárlás", COCA.replace("650.00", "900.00"), -900),
+        (date(2026, 9, 28), "Kártyás vásárlás", COCA.replace("650.00", "100.00"), -100),
+        (date(2026, 9, 27), "Jóváírás", "visszatérítés budapest nyx cocacolahbcmag", 500),
+    ]
+    upload(client, rows)
+    # Egy tételt kézzel már beállított → azt a szabály nem írja felül
+    manual = next(t for t in client.get("/api/transactions").json if t["amount"] == -100)
+    client.patch(f"/api/transactions/{manual['id']}", json={"main_category": "egyéb"}, headers=HDR)
+
+    assert client.post("/api/rules", json={"pattern": "ab", "main_category": "x"}, headers=HDR).status_code == 400
+    assert client.post("/api/rules", json={"pattern": "abc", "main_category": " "}, headers=HDR).status_code == 400
+
+    r = client.post(
+        "/api/rules", json={"pattern": "  budapest  NYX cocacolahbcmag ", "main_category": "üdítő"}, headers=HDR
+    )
+    assert r.status_code == 200, r.json
+    assert r.json["applied"] == 2
+    assert r.json["rule"]["pattern"] == "budapest NYX cocacolahbcmag"
+    by_amount = {t["amount"]: t for t in client.get("/api/transactions").json}
+    assert by_amount[-650]["main_category"] == "üdítő" and by_amount[-650]["category_source"] == "rule"
+    assert by_amount[-100]["main_category"] == "egyéb"
+    assert by_amount[500]["main_category"] == "bevétel"
+
+    # Ugyanaz a minta újra → felülírja, nem duplikál
+    client.post("/api/rules", json={"pattern": "Budapest NYX CocaColaHBCMag", "main_category": "bolt", "apply_existing": False}, headers=HDR)
+    rules = client.get("/api/rules").json
+    assert [(r["pattern"], r["main_category"]) for r in rules] == [("Budapest NYX CocaColaHBCMag", "bolt")]
+
+    # Új import: a saját szabály elsőbbséget élvez a beépített listával szemben
+    client.post("/api/rules", json={"pattern": "spar 123", "main_category": "saját bolt"}, headers=HDR)
+    upload(client, [
+        (date(2026, 10, 1), "Kártyás vásárlás", COCA.replace("650.00", "77.00"), -77),
+        (date(2026, 10, 1), "Kártyás vásárlás", "SPAR 123 BUDAPEST", -12),
+    ])
+    by_amount = {t["amount"]: t for t in client.get("/api/transactions").json}
+    assert by_amount[-77]["main_category"] == "bolt" and by_amount[-77]["category_source"] == "rule"
+    assert by_amount[-12]["main_category"] == "saját bolt"
+
+    # A szabályok felhasználónként külön vannak
+    login(client, USER_B)
+    assert client.get("/api/rules").json == []
+    assert client.delete(f"/api/rules/{rules[0]['id']}", headers=HDR).status_code == 404
+
+    login(client, USER_A)
+    assert client.delete(f"/api/rules/{rules[0]['id']}", headers=HDR).status_code == 200
+    assert [r["pattern"] for r in client.get("/api/rules").json] == ["spar 123"]

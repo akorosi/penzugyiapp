@@ -299,3 +299,111 @@ def delete_attribute(owner: str, attr_id: str) -> list[str]:
         return ids
 
     return run_in_transaction(op)
+
+
+# ---------- tömeges fő attribútum beállítás ----------
+
+def bulk_set_main_category(owner: str, tx_ids: list[str], value: str | None) -> int:
+    """Több tétel fő attribútumának egyszerre történő (kézi) beállítása.
+    Darabolva írunk, hogy egy DSQL tranzakció sormódosítási korlátja ne teljen be."""
+    updated = 0
+    for chunk in _chunks(list(dict.fromkeys(tx_ids)), IMPORT_CHUNK):
+
+        def op(conn: psycopg.Connection, chunk=chunk) -> int:
+            cur = conn.execute(
+                f"""UPDATE transactions SET main_category = %s, category_source = 'manual', updated_at = now()
+                    WHERE owner = %s AND is_active AND id IN ({_placeholders(len(chunk))})""",
+                (value, owner, *chunk),
+            )
+            return cur.rowcount
+
+        updated += run_in_transaction(op)
+    return updated
+
+
+# ---------- saját kategorizálási szabályok ----------
+
+_RULE_COLS = "id, pattern, main_category, created_at"
+
+
+def _serialize_rule(row: dict) -> dict:
+    return {
+        "id": str(row["id"]),
+        "pattern": row["pattern"],
+        "main_category": row["main_category"],
+        "created_at": row["created_at"].isoformat(),
+    }
+
+
+def list_rules(owner: str) -> list[dict]:
+    rows = get_conn().execute(
+        f"SELECT {_RULE_COLS} FROM category_rules WHERE owner = %s ORDER BY lower(pattern), id", (owner,)
+    ).fetchall()
+    return [_serialize_rule(r) for r in rows]
+
+
+def rules_for_matching(owner: str) -> list[tuple[str, str]]:
+    """(kisbetűs minta, fő attribútum) párok; a hosszabb (specifikusabb) minta nyer."""
+    rules = [(r["pattern"].lower(), r["main_category"]) for r in list_rules(owner)]
+    return sorted(rules, key=lambda r: -len(r[0]))
+
+
+def match_rule(rules: list[tuple[str, str]], description: str | None) -> str | None:
+    desc = (description or "").lower()
+    if not desc:
+        return None
+    return next((cat for pattern, cat in rules if pattern in desc), None)
+
+
+def save_rule(owner: str, pattern: str, main_category: str) -> dict:
+    """Új szabály; ha ugyanez a minta (kis/nagybetűtől függetlenül) már létezik,
+    annak fő attribútumát írja felül."""
+
+    def op(conn: psycopg.Connection) -> dict:
+        row = conn.execute(
+            f"""UPDATE category_rules SET pattern = %s, main_category = %s
+                WHERE owner = %s AND lower(pattern) = lower(%s) RETURNING {_RULE_COLS}""",
+            (pattern, main_category, owner, pattern),
+        ).fetchone()
+        if row is None:
+            row = conn.execute(
+                f"""INSERT INTO category_rules (id, owner, pattern, main_category) VALUES (%s, %s, %s, %s)
+                    RETURNING {_RULE_COLS}""",
+                (str(uuid.uuid4()), owner, pattern, main_category),
+            ).fetchone()
+        return _serialize_rule(row)
+
+    return run_in_transaction(op)
+
+
+def delete_rule(owner: str, rule_id: str) -> bool:
+    def op(conn: psycopg.Connection) -> bool:
+        cur = conn.execute("DELETE FROM category_rules WHERE id = %s AND owner = %s", (rule_id, owner))
+        return cur.rowcount > 0
+
+    return run_in_transaction(op)
+
+
+def apply_rule_to_existing(owner: str, pattern: str, main_category: str) -> list[str]:
+    """A szabály alkalmazása a már meglévő, fő attribútum nélküli kiadásokra.
+    Visszaadja a módosított tételek azonosítóit."""
+    rules = [(pattern.lower(), main_category)]
+    rows = get_conn().execute(
+        """SELECT id, description FROM transactions
+           WHERE owner = %s AND is_active AND amount < 0
+             AND (main_category IS NULL OR btrim(main_category) = '')""",
+        (owner,),
+    ).fetchall()
+    ids = [str(r["id"]) for r in rows if match_rule(rules, r["description"])]
+    for chunk in _chunks(ids, IMPORT_CHUNK):
+
+        def op(conn: psycopg.Connection, chunk=chunk) -> None:
+            conn.execute(
+                f"""UPDATE transactions SET main_category = %s, category_source = 'rule', updated_at = now()
+                    WHERE owner = %s AND is_active AND (main_category IS NULL OR btrim(main_category) = '')
+                      AND id IN ({_placeholders(len(chunk))})""",
+                (main_category, owner, *chunk),
+            )
+
+        run_in_transaction(op)
+    return ids
