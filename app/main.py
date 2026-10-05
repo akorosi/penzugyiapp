@@ -21,6 +21,8 @@ from excel_parser import make_hash, parse_cib_statement
 
 ALLOWED_EXT = {".xls", ".xlsx"}
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # a Lambda Function URL kérésmérete max. 6 MB
+MAX_BULK_IDS = 5000
+MIN_RULE_PATTERN = 3
 PUBLIC_API_PATHS = ("/api/auth/", "/api/health")
 
 # Helyi futtatásnál a lebuildelt React felület (frontend/dist) kiszolgálása.
@@ -242,15 +244,20 @@ def upload():
         by_hash.setdefault(make_hash(rec, g.user), rec)
     existing = repo.existing_hashes(g.user, list(by_hash))
 
+    # A felhasználó saját szabályai elsőbbséget élveznek a beépített listával szemben.
+    user_rules = repo.rules_for_matching(g.user)
     new_items = []
     for h, rec in by_hash.items():
         if h in existing:
             continue
         item = {**rec, "tx_hash": h, "main_category": None, "category_source": "none", "sub_category": None}
         if rec["amount"] < 0:
-            main_cat, sub_cat = auto_categorize(rec["description"])
-            if main_cat:
-                item.update(main_category=main_cat, category_source="auto", sub_category=sub_cat)
+            if rule_cat := repo.match_rule(user_rules, rec["description"]):
+                item.update(main_category=rule_cat, category_source="rule")
+            else:
+                main_cat, sub_cat = auto_categorize(rec["description"])
+                if main_cat:
+                    item.update(main_category=main_cat, category_source="auto", sub_category=sub_cat)
         else:
             # Bevétel rekordoknál automatikusan "bevétel" fő attribútum kerül
             # beállításra; a felhasználó ezt utólag bármikor felülírhatja.
@@ -286,6 +293,51 @@ def update_transaction(tx_id):
     if not tx:
         return _error("A tranzakció nem található.", 404)
     return jsonify(tx)
+
+
+@app.route("/api/transactions/bulk-main-category", methods=["POST"])
+def bulk_update_main_category():
+    data = request.get_json(force=True, silent=True) or {}
+    ids = data.get("ids")
+    if not isinstance(ids, list) or not ids:
+        return _error("Nincs kijelölt tétel.", 400)
+    if len(ids) > MAX_BULK_IDS:
+        return _error(f"Egyszerre legfeljebb {MAX_BULK_IDS} tétel módosítható.", 400)
+    try:
+        ids = [str(uuid.UUID(str(i))) for i in ids]
+    except ValueError:
+        return _error("Érvénytelen tétel-azonosító.", 400)
+    value = (data.get("main_category") or "").strip() or None
+    return jsonify({"updated": repo.bulk_set_main_category(g.user, ids, value)})
+
+
+# ---------- saját kategorizálási szabályok ----------
+
+@app.route("/api/rules", methods=["GET"])
+def list_rules():
+    return jsonify(repo.list_rules(g.user))
+
+
+@app.route("/api/rules", methods=["POST"])
+def create_rule():
+    data = request.get_json(force=True, silent=True) or {}
+    pattern = " ".join((data.get("pattern") or "").split())
+    main_category = (data.get("main_category") or "").strip()
+    if len(pattern) < MIN_RULE_PATTERN:
+        return _error(f"A minta legalább {MIN_RULE_PATTERN} karakter legyen.", 400)
+    if not main_category:
+        return _error("A fő attribútum nem lehet üres.", 400)
+    rule = repo.save_rule(g.user, pattern, main_category)
+    applied = repo.apply_rule_to_existing(g.user, pattern, main_category) if data.get("apply_existing", True) else []
+    return jsonify({"rule": rule, "applied": len(applied)})
+
+
+@app.route("/api/rules/<rule_id>", methods=["DELETE"])
+def delete_rule(rule_id):
+    rule_id = _uuid_or_404(rule_id)
+    if not repo.delete_rule(g.user, rule_id):
+        return _error("A szabály nem található.", 404)
+    return jsonify({"deleted": rule_id})
 
 
 # ---------- al-attribútum fa kezelése (azonnali mentés) ----------

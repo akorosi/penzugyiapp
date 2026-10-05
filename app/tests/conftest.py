@@ -67,6 +67,7 @@ def app_client():
     conn = db.get_conn()
     conn.execute("DELETE FROM attributes")
     conn.execute("DELETE FROM transactions")
+    conn.execute("DELETE FROM category_rules")
     return app.test_client()
 
 

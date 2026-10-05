@@ -1,4 +1,4 @@
-import type { AttributeNode, Transaction, UploadResult } from "./types";
+import type { AttributeNode, CategoryRule, Transaction, UploadResult } from "./types";
 
 // ---------- futásidejű konfiguráció ----------
 //
@@ -152,6 +152,20 @@ export const api = {
 
   setMainCategory: (txId: string, mainCategory: string) =>
     request<Transaction>(`/api/transactions/${txId}`, json("PATCH", { main_category: mainCategory })),
+
+  bulkSetMainCategory: (ids: string[], mainCategory: string) =>
+    request<{ updated: number }>("/api/transactions/bulk-main-category", json("POST", { ids, main_category: mainCategory })),
+
+  listRules: () => request<CategoryRule[]>("/api/rules"),
+
+  /** Szabály mentése; applyExisting esetén a meglévő, fő attribútum nélküli kiadásokra is alkalmazza. */
+  createRule: (pattern: string, mainCategory: string, applyExisting = true) =>
+    request<{ rule: CategoryRule; applied: number }>(
+      "/api/rules",
+      json("POST", { pattern, main_category: mainCategory, apply_existing: applyExisting }),
+    ),
+
+  deleteRule: (ruleId: string) => request<{ deleted: string }>(`/api/rules/${ruleId}`, { method: "DELETE" }),
 
   deleteTransaction: (txId: string) =>
     request<{ deleted: string }>(`/api/transactions/${txId}`, { method: "DELETE" }),

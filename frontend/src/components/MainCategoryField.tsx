@@ -13,7 +13,7 @@ interface Props {
 
 type SaveState = "idle" | "saving" | "saved" | "error";
 
-const SOURCE_LABEL = { auto: "automatikus", manual: "kézi", none: "" } as const;
+const SOURCE_LABEL = { auto: "automatikus", rule: "saját szabály", manual: "kézi", none: "" } as const;
 
 /** Fő attribútum szövegmező: gépelés közben, mentés gomb nélkül ment. */
 export function MainCategoryField({ tx, listId, onSaved }: Props) {

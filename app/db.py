@@ -154,6 +154,18 @@ SCHEMA_TABLES = [
         created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
     )
     """,
+    # Felhasználónként mentett kategorizálási szabályok: ha a közlemény
+    # tartalmazza a mintát (kis/nagybetű-független), a kiadás ezt a fő
+    # attribútumot kapja.
+    """
+    CREATE TABLE IF NOT EXISTS category_rules (
+        id            UUID PRIMARY KEY,
+        owner         TEXT NOT NULL,
+        pattern       TEXT NOT NULL,
+        main_category TEXT NOT NULL,
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+    """,
 ]
 
 # Utólag hozzáadott oszlopok (korábbi sémán ALTER TABLE-lel pótoljuk).
@@ -169,6 +181,7 @@ SCHEMA_INDEXES = [
     ("ix_transactions_date", "transactions", "date"),
     ("ix_transactions_main_category", "transactions", "main_category"),
     ("ix_attributes_transaction_id", "attributes", "transaction_id"),
+    ("ix_category_rules_owner", "category_rules", "owner"),
 ]
 
 

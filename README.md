@@ -235,6 +235,17 @@ Adatok törlése: `docker compose down -v`.
    case-sensitive**. **Bevétel** rekordoknál (pozitív összeg) automatikusan
    a "bevétel" fő attribútum kerül beállításra — ez utólag bármikor
    felülírható kézzel.
+   - **Saját szabályok** (fiók menü → *Saját szabályok…*): "ha a közlemény
+     tartalmazza X-et → fő attribútum Y". Felhasználónként tárolódnak, és
+     elsőbbséget élveznek a beépített listával szemben (több illeszkedő
+     szabály közül a hosszabb minta nyer). Felvételkor a már meglévő, fő
+     attribútum nélküli kiadásokra is alkalmazhatók; az így beállított
+     tételek alatt "saját szabály" felirat látszik.
+   - **Tömeges beállítás:** szűrés (pl. a keresőbe írt
+     "Budapest NYX CocaColaHBCMag") után a *Fő attribútum beállítása* gomb
+     az összes szűrt tételnek (alapból csak a fő attribútum nélkülieknek)
+     egyszerre beállítja az értéket, és a keresett szöveget opcionálisan
+     saját szabályként is elmenti a későbbi importokra.
 4. A **Tételek** fülön lévő táblázatban minden sornál:
    - a **Fő attribútum** mezőbe írva a rendszer **azonnal, mentés gomb
      nélkül** elmenti a változást (gépelés szüneténél vagy a mező

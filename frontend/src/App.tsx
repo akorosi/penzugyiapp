@@ -21,7 +21,9 @@ import {
   CrossCircledIcon,
   DesktopIcon,
   ExitIcon,
+  LightningBoltIcon,
   MoonIcon,
+  Pencil2Icon,
   ReloadIcon,
   SunIcon,
   TableIcon,
@@ -41,6 +43,11 @@ import type { AppearancePref } from "./lib/useAppearance";
 
 // A diagram-könyvtár külön chunkba kerül, csak az Elemzés fül megnyitásakor töltődik be.
 const AnalyticsView = lazy(() => import("./components/AnalyticsView").then((m) => ({ default: m.AnalyticsView })));
+// A ritkán használt ablakok szintén csak megnyitáskor töltődnek be.
+const BulkCategoryDialog = lazy(() =>
+  import("./components/BulkCategoryDialog").then((m) => ({ default: m.BulkCategoryDialog })),
+);
+const RulesDialog = lazy(() => import("./components/RulesDialog").then((m) => ({ default: m.RulesDialog })));
 
 type View = "tetelek" | "elemzes";
 const readView = (): View => (window.location.hash === "#elemzes" ? "elemzes" : "tetelek");
@@ -56,6 +63,8 @@ export function App({ appearance }: Props) {
   // Kijelölésből kivett tételek — csak munkamenet-szintű állapot, nem kerül mentésre.
   const [excludedIds, setExcludedIds] = useState<Set<string>>(() => new Set());
   const [view, setView] = useState<View>(readView);
+  const [rulesOpen, setRulesOpen] = useState(false);
+  const [bulkOpen, setBulkOpen] = useState(false);
 
   useEffect(() => {
     const onHash = () => setView(readView());
@@ -138,6 +147,24 @@ export function App({ appearance }: Props) {
     await data.reload();
   };
 
+  const onBulkDone = async ({ updated, ruleApplied }: { updated: number; ruleApplied: number | null }) => {
+    await data.reload();
+    const parts = [`${updated} tétel módosítva.`];
+    if (ruleApplied !== null) {
+      parts.push(
+        ruleApplied > 0
+          ? `Szabály mentve, további ${ruleApplied} meglévő kiadásra is alkalmazva.`
+          : "Szabály mentve, a következő importoknál is érvényes.",
+      );
+    }
+    toast({ title: "Fő attribútum beállítva", description: parts.join(" "), tone: "success" });
+  };
+
+  const onRuleApplied = async (applied: number) => {
+    await data.reload();
+    toast({ title: "Szabály alkalmazva", description: `${applied} meglévő kiadás kapott fő attribútumot.`, tone: "success" });
+  };
+
   const ThemeIcon = appearance.pref === "system" ? DesktopIcon : appearance.resolved === "dark" ? MoonIcon : SunIcon;
 
   return (
@@ -185,6 +212,14 @@ export function App({ appearance }: Props) {
                           {data.me.email}
                         </Text>
                       </Box>
+                      <DropdownMenu.Separator />
+                    </>
+                  )}
+                  {!unauthorized && (
+                    <>
+                      <DropdownMenu.Item onSelect={() => setRulesOpen(true)}>
+                        <LightningBoltIcon /> Saját szabályok…
+                      </DropdownMenu.Item>
                       <DropdownMenu.Separator />
                     </>
                   )}
@@ -295,6 +330,15 @@ export function App({ appearance }: Props) {
                           {excludedInView} kijelölés nélkül
                         </Badge>
                       )}
+                      <Button
+                        size="1"
+                        variant="soft"
+                        disabled={!hasActiveFilters(filters) || filtered.length === 0}
+                        title={hasActiveFilters(filters) ? undefined : "Előbb szűrd le a tételeket (pl. kereséssel)"}
+                        onClick={() => setBulkOpen(true)}
+                      >
+                        <Pencil2Icon /> Fő attribútum beállítása
+                      </Button>
                     </Flex>
                   </Skeleton>
                 </Flex>
@@ -346,6 +390,22 @@ export function App({ appearance }: Props) {
           </Flex>
         </main>
       </Container>
+
+      <Suspense fallback={null}>
+        {bulkOpen && (
+          <BulkCategoryDialog
+            open
+            onOpenChange={setBulkOpen}
+            rows={filtered}
+            categories={data.categories}
+            search={filters.search}
+            onDone={onBulkDone}
+          />
+        )}
+        {rulesOpen && (
+          <RulesDialog open onOpenChange={setRulesOpen} categories={data.categories} onApplied={onRuleApplied} />
+        )}
+      </Suspense>
     </>
   );
 }
