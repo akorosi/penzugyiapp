@@ -1,6 +1,5 @@
-import { useMemo, type ReactNode } from "react";
-import { Box, Card, Flex, Grid, Heading, Table, Text } from "@radix-ui/themes";
-import { BarChartIcon } from "@radix-ui/react-icons";
+import { useMemo, useState } from "react";
+import { Box, Flex, Grid, SegmentedControl, Table, Text } from "@radix-ui/themes";
 import {
   Bar,
   BarChart,
@@ -19,6 +18,8 @@ import type { Transaction } from "../lib/types";
 import { expensesByCategory, monthlyFlow } from "../lib/ledger";
 import { formatCompact, formatHuf, formatMonth, formatPercent } from "../lib/format";
 import { CATEGORICAL, OTHER_COLOR, OTHER_LABEL } from "../lib/palette";
+import { AXIS_TICK, ChartCard, ChartTooltip, EmptyChart, GRID_STROKE } from "./chartParts";
+import { MonthlySpendingPanel } from "./MonthlySpendingPanel";
 
 interface Props {
   included: Transaction[];
@@ -26,72 +27,27 @@ interface Props {
   appearance: "light" | "dark";
 }
 
-const AXIS_TICK = { fill: "var(--gray-11)", fontSize: 12 };
-const GRID_STROKE = "var(--gray-a4)";
+type Panel = "attekintes" | "havi";
 
-function ChartTooltip({
-  active,
-  payload,
-  label,
-  labelFormatter,
-}: {
-  active?: boolean;
-  payload?: { name?: string; value?: number; color?: string; payload?: { fill?: string } }[];
-  label?: string | number;
-  labelFormatter?: (l: string) => string;
-}) {
-  if (!active || !payload?.length) return null;
-  const title = label != null && label !== "" ? (labelFormatter ? labelFormatter(String(label)) : String(label)) : null;
+export function AnalyticsView(props: Props) {
+  const [panel, setPanel] = useState<Panel>("attekintes");
   return (
-    <div className="chart-tooltip">
-      {title && (
-        <Text as="div" size="1" weight="medium" mb="1">
-          {title}
+    <Flex direction="column" gap="4">
+      <Flex align="center" justify="between" gap="3" wrap="wrap">
+        <SegmentedControl.Root value={panel} onValueChange={(v) => setPanel(v as Panel)} aria-label="Elemzés nézet">
+          <SegmentedControl.Item value="attekintes">Áttekintés</SegmentedControl.Item>
+          <SegmentedControl.Item value="havi">Havi költés</SegmentedControl.Item>
+        </SegmentedControl.Root>
+        <Text size="2" color="gray">
+          A diagramok csak a jelenlegi szűrésnek megfelelő <strong>és kijelölt</strong> tételek alapján számolnak.
         </Text>
-      )}
-      {payload.map((p, i) => (
-        <Flex key={i} align="center" gap="2">
-          <span className="swatch" style={{ background: p.color ?? p.payload?.fill }} aria-hidden />
-          <Text size="1" color="gray">
-            {p.name}
-          </Text>
-          <Text size="1" weight="medium" className="tabular" ml="auto">
-            {formatHuf(p.value ?? 0)}
-          </Text>
-        </Flex>
-      ))}
-    </div>
-  );
-}
-
-function ChartCard({ title, description, children }: { title: string; description: string; children: ReactNode }) {
-  return (
-    <Card size="3" asChild>
-      <section aria-label={title}>
-        <Heading as="h3" size="3" mb="1">
-          {title}
-        </Heading>
-        <Text as="p" size="2" color="gray" mb="4">
-          {description}
-        </Text>
-        {children}
-      </section>
-    </Card>
-  );
-}
-
-function EmptyChart() {
-  return (
-    <Flex direction="column" align="center" justify="center" gap="2" py="8" className="empty-chart">
-      <BarChartIcon width="24" height="24" aria-hidden />
-      <Text size="2" color="gray">
-        Nincs megjeleníthető kiadás a jelenlegi szűrés és kijelölés mellett.
-      </Text>
+      </Flex>
+      {panel === "havi" ? <MonthlySpendingPanel {...props} /> : <Overview {...props} />}
     </Flex>
   );
 }
 
-export function AnalyticsView({ included, colorIndex, appearance }: Props) {
+function Overview({ included, colorIndex, appearance }: Props) {
   const palette = CATEGORICAL[appearance];
   const otherColor = OTHER_COLOR[appearance];
   const expenses = useMemo(() => expensesByCategory(included), [included]);
@@ -116,10 +72,6 @@ export function AnalyticsView({ included, colorIndex, appearance }: Props) {
 
   return (
     <Flex direction="column" gap="4">
-      <Text size="2" color="gray">
-        A diagramok csak a jelenlegi szűrésnek megfelelő <strong>és kijelölt</strong> tételek alapján számolnak.
-      </Text>
-
       <Grid columns={{ initial: "1", lg: "2" }} gap="4">
         <ChartCard title="Kiadások fő attribútum szerint" description="Legnagyobb költés felül, csökkenő sorrendben.">
           {expenses.length === 0 ? (

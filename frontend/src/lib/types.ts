@@ -31,7 +31,7 @@ export type KindFilter = "all" | "income" | "expense" | "savings";
 export interface Filters {
   dateFrom: string;
   dateTo: string;
-  mainCategory: string; // "" = összes
+  mainCategory: string; // "" = összes, NO_MAIN_CATEGORY = csak a fő attribútum nélküliek
   search: string;
   kind: KindFilter;
 }
@@ -43,5 +43,8 @@ export const EMPTY_FILTERS: Filters = {
   search: "",
   kind: "all",
 };
+
+/** Szűrőérték: azok a tételek, amelyeknek nincs (üres) fő attribútuma. */
+export const NO_MAIN_CATEGORY = "__none__";
 
 export const SAVINGS_LABEL = "megtakarítás";
