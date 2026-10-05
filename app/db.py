@@ -49,6 +49,16 @@ def _region() -> str:
     raise RuntimeError("Nem állapítható meg az AWS régió a DSQL kapcsolathoz (AWS_REGION).")
 
 
+def _ca_bundle() -> str:
+    """A TLS ellenőrzéshez használt CA-csomag. A psycopg[binary] saját OpenSSL-t
+    hoz, amelynek alapértelmezett tanúsítványkönyvtára a build gépre mutat, így
+    az sslrootcert="system" a Lambdában egyetlen CA-t sem talál
+    ("certificate verify failed"). Ezért a certifi csomagját adjuk át."""
+    import certifi
+
+    return certifi.where()
+
+
 def _connect() -> psycopg.Connection:
     if IS_DSQL:
         import boto3  # csak AWS módban szükséges
@@ -63,7 +73,7 @@ def _connect() -> psycopg.Connection:
             user="admin",
             password=token,
             sslmode=os.environ.get("DSQL_SSLMODE", "verify-full"),
-            sslrootcert=os.environ.get("DSQL_SSLROOTCERT", "system"),
+            sslrootcert=os.environ.get("DSQL_SSLROOTCERT") or _ca_bundle(),
             connect_timeout=10,
             autocommit=True,
             row_factory=dict_row,
